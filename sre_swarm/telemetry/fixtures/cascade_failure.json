@@ -1,0 +1,110 @@
+[
+  {
+    "trace_id":    "trace-cascade-001",
+    "span_id":     "span-c001a",
+    "service":     "api-gateway",
+    "status_code": 503,
+    "latency_ms":  6200,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:10:00Z"
+  },
+  {
+    "trace_id":    "trace-cascade-001",
+    "span_id":     "span-c001b",
+    "service":     "order-service",
+    "status_code": 500,
+    "latency_ms":  3100,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:10:00Z"
+  },
+  {
+    "trace_id":    "trace-cascade-001",
+    "span_id":     "span-c001c",
+    "service":     "payment-service",
+    "status_code": 500,
+    "latency_ms":  4900,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:10:00Z"
+  },
+  {
+    "trace_id":    "trace-cascade-001",
+    "span_id":     "span-c001d",
+    "service":     "inventory-service",
+    "status_code": 503,
+    "latency_ms":  2800,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:10:00Z"
+  },
+  {
+    "trace_id":    "trace-cascade-002",
+    "span_id":     "span-c002a",
+    "service":     "api-gateway",
+    "status_code": 503,
+    "latency_ms":  6450,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:10:01Z"
+  },
+  {
+    "trace_id":    "trace-cascade-002",
+    "span_id":     "span-c002b",
+    "service":     "order-service",
+    "status_code": 500,
+    "latency_ms":  3300,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:10:01Z"
+  },
+  {
+    "trace_id":    "trace-cascade-002",
+    "span_id":     "span-c002c",
+    "service":     "payment-service",
+    "status_code": 500,
+    "latency_ms":  5200,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:10:01Z"
+  },
+  {
+    "trace_id":    "trace-cascade-002",
+    "span_id":     "span-c002d",
+    "service":     "inventory-service",
+    "status_code": 503,
+    "latency_ms":  2600,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:10:01Z"
+  },
+  {
+    "trace_id":    "trace-cascade-003",
+    "span_id":     "span-c003a",
+    "service":     "api-gateway",
+    "status_code": 503,
+    "latency_ms":  7100,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:10:02Z"
+  },
+  {
+    "trace_id":    "trace-cascade-003",
+    "span_id":     "span-c003b",
+    "service":     "order-service",
+    "status_code": 500,
+    "latency_ms":  3800,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:10:02Z"
+  },
+  {
+    "trace_id":    "trace-cascade-003",
+    "span_id":     "span-c003c",
+    "service":     "payment-service",
+    "status_code": 500,
+    "latency_ms":  4700,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:10:02Z"
+  },
+  {
+    "trace_id":    "trace-cascade-003",
+    "span_id":     "span-c003d",
+    "service":     "inventory-service",
+    "status_code": 503,
+    "latency_ms":  3100,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:10:02Z"
+  }
+]

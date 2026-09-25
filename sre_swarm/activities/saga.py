@@ -56,29 +56,18 @@ async def execute_compensating_transaction(request: CompensationRequest) -> dict
         "Executing compensating transaction: %s %s", request.method, request.endpoint
     )
 
-    # --- STUB: simulate compensation call ---------------------------------
-    # Replace with the real implementation once mock services are running:
-    #
-    # url = f"{MOCK_SERVICES_BASE_URL}{request.endpoint}"
-    # async with httpx.AsyncClient() as client:
-    #     response = await client.request(
-    #         method=request.method,
-    #         url=url,
-    #         json=request.payload,
-    #         timeout=20.0,
-    #     )
-    #     if response.status_code == 409:
-    #         # Already compensated — idempotent, treat as success.
-    #         return {"status": "already_compensated", "endpoint": request.endpoint}
-    #     if response.status_code >= 500:
-    #         raise ApplicationError(f"Compensation failed: {response.text}", non_retryable=False)
-    #     response.raise_for_status()
-    #     return response.json()
-    # --- END STUB ----------------------------------------------------------
-
-    # Stub: return a synthetic success response
-    return {
-        "status": "compensated",
-        "endpoint": request.endpoint,
-        "payload": request.payload,
-    }
+    url = f"{MOCK_SERVICES_BASE_URL}{request.endpoint}"
+    async with httpx.AsyncClient() as client:
+        response = await client.request(
+            method=request.method,
+            url=url,
+            json=request.payload,
+            timeout=20.0,
+        )
+        if response.status_code == 409:
+            # Already compensated — idempotent, treat as success.
+            return {"status": "already_compensated", "endpoint": request.endpoint}
+        if response.status_code >= 500:
+            raise ApplicationError(f"Compensation failed: {response.text}", non_retryable=False)
+        response.raise_for_status()
+        return response.json()

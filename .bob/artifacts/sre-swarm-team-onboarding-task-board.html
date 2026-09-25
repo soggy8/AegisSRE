@@ -1,0 +1,709 @@
+
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SRE Swarm — Onboarding</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+    font-size: 14px;
+    line-height: 1.65;
+    background: #f7f8fa;
+    color: #1f2328;
+    padding: 32px 16px 64px;
+  }
+
+  .page { max-width: 760px; margin: 0 auto; }
+
+  /* ── Header ── */
+  .header {
+    border-bottom: 2px solid #e5e7eb;
+    padding-bottom: 20px;
+    margin-bottom: 32px;
+  }
+  .header-tag {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    color: #57606a;
+    margin-bottom: 6px;
+  }
+  .header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    color: #1f2328;
+    margin-bottom: 6px;
+  }
+  .header p { color: #57606a; font-size: 13px; max-width: 560px; }
+
+  /* ── Section titles ── */
+  h2 {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: .06em;
+    text-transform: uppercase;
+    color: #57606a;
+    margin: 36px 0 14px;
+    padding-bottom: 6px;
+    border-bottom: 1px solid #e5e7eb;
+  }
+
+  /* ── Architecture diagram ── */
+  .arch {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 20px 24px;
+    font-family: "SFMono-Regular", "Consolas", "Liberation Mono", monospace;
+    font-size: 12px;
+    line-height: 1.9;
+    color: #1f2328;
+    overflow-x: auto;
+  }
+  .arch .comment { color: #57606a; }
+  .arch .box     { color: #3b82d4; font-weight: 600; }
+  .arch .arrow   { color: #adb5bd; }
+  .arch .done    { color: #2ea043; font-weight: 600; }
+  .arch .stub    { color: #bf8700; font-weight: 600; }
+  .arch .empty   { color: #cf222e; font-weight: 600; }
+
+  /* ── Setup steps ── */
+  .steps { list-style: none; counter-reset: step; }
+  .steps li {
+    counter-increment: step;
+    display: flex;
+    gap: 14px;
+    align-items: flex-start;
+    padding: 10px 0;
+    border-bottom: 1px solid #f0f1f3;
+  }
+  .steps li:last-child { border-bottom: none; }
+  .step-num {
+    flex-shrink: 0;
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    background: #3b82d4;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 1px;
+  }
+  .steps li div { flex: 1; }
+  .steps li strong { display: block; font-size: 13px; margin-bottom: 2px; }
+  .steps li p { color: #57606a; font-size: 12.5px; }
+  code {
+    background: #f0f1f3;
+    border: 1px solid #e5e7eb;
+    border-radius: 3px;
+    padding: 1px 5px;
+    font-family: "SFMono-Regular", "Consolas", monospace;
+    font-size: 11.5px;
+    color: #1f2328;
+  }
+
+  /* ── Pillar cards ── */
+  .pillars {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  @media (max-width: 520px) { .pillars { grid-template-columns: 1fr; } }
+  .pillar {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .pillar-title {
+    font-size: 12px;
+    font-weight: 700;
+    color: #1f2328;
+    margin-bottom: 3px;
+  }
+  .pillar-tech {
+    font-size: 11px;
+    color: #3b82d4;
+    font-weight: 600;
+    margin-bottom: 6px;
+  }
+  .pillar p { font-size: 12px; color: #57606a; }
+
+  /* ── Team area cards ── */
+  .team-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+  }
+  @media (max-width: 540px) { .team-grid { grid-template-columns: 1fr; } }
+  .team-card {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 16px 18px;
+  }
+  .team-card-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #f0f1f3;
+  }
+  .team-badge {
+    width: 28px;
+    height: 28px;
+    border-radius: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 11px;
+    font-weight: 800;
+    flex-shrink: 0;
+  }
+  .badge-a { background: #dbeafe; color: #1d4ed8; }
+  .badge-b { background: #dcfce7; color: #166534; }
+  .badge-c { background: #fef9c3; color: #854d0e; }
+  .badge-d { background: #f3e8ff; color: #6b21a8; }
+
+  .team-card-title { font-size: 13px; font-weight: 700; }
+  .team-card-path  { font-size: 11px; color: #57606a; margin-top: 1px; }
+
+  .task-list { list-style: none; }
+  .task-list li {
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+    padding: 5px 0;
+    border-bottom: 1px solid #f7f8fa;
+    font-size: 12.5px;
+  }
+  .task-list li:last-child { border-bottom: none; }
+
+  .check { flex-shrink: 0; margin-top: 2px; }
+  .check-box {
+    width: 14px;
+    height: 14px;
+    border: 1.5px solid #d0d7de;
+    border-radius: 3px;
+    display: inline-block;
+    background: #fff;
+  }
+  .task-text { flex: 1; color: #1f2328; }
+  .task-note { display: block; font-size: 11px; color: #57606a; margin-top: 1px; }
+
+  .first-file {
+    margin-top: 10px;
+    padding: 8px 10px;
+    background: #f7f8fa;
+    border: 1px solid #e5e7eb;
+    border-radius: 5px;
+    font-size: 11.5px;
+    color: #57606a;
+  }
+  .first-file strong { color: #1f2328; }
+
+  /* ── Rule box ── */
+  .rule-box {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-left: 4px solid #3b82d4;
+    border-radius: 0 8px 8px 0;
+    padding: 14px 18px;
+    margin-bottom: 14px;
+  }
+  .rule-box h3 { font-size: 13px; font-weight: 700; margin-bottom: 8px; }
+  .rule-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .rule-table th {
+    text-align: left;
+    padding: 5px 8px;
+    background: #f7f8fa;
+    border: 1px solid #e5e7eb;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: #57606a;
+  }
+  .rule-table td {
+    padding: 6px 8px;
+    border: 1px solid #f0f1f3;
+    vertical-align: top;
+  }
+  .ok  { color: #2ea043; font-weight: 700; }
+  .no  { color: #cf222e; font-weight: 700; }
+
+  /* ── Gotchas ── */
+  .gotcha {
+    background: #fff;
+    border: 1px solid #e5e7eb;
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin-bottom: 10px;
+  }
+  .gotcha-title { font-size: 12.5px; font-weight: 700; color: #bf8700; margin-bottom: 4px; }
+  .gotcha p { font-size: 12px; color: #57606a; }
+
+  /* ── Env table ── */
+  .env-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .env-table th {
+    text-align: left;
+    padding: 6px 10px;
+    background: #f7f8fa;
+    border: 1px solid #e5e7eb;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: #57606a;
+  }
+  .env-table td {
+    padding: 6px 10px;
+    border: 1px solid #f0f1f3;
+    vertical-align: top;
+  }
+  .env-table tr:nth-child(even) td { background: #fafbfc; }
+  .owner { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 1px 6px; border-radius: 10px; }
+  .owner-a { background: #dbeafe; color: #1d4ed8; }
+  .owner-b { background: #dcfce7; color: #166534; }
+  .owner-c { background: #fef9c3; color: #854d0e; }
+  .owner-d { background: #f3e8ff; color: #6b21a8; }
+
+  /* ── Footer ── */
+  .footer {
+    margin-top: 48px;
+    padding-top: 16px;
+    border-top: 1px solid #e5e7eb;
+    text-align: center;
+    font-size: 12px;
+    color: #adb5bd;
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+  
+  <div class="header">
+    <div class="header-tag">Hackathon · Distributed Systems Track</div>
+    <h1>Autonomous SRE Orchestration Swarm</h1>
+    <p>Team onboarding guide, architecture map, and task board. Read this before touching the code.</p>
+  </div>
+
+  
+  <h2>System Architecture</h2>
+  <div class="arch">
+<span class="comment">  Alert / Webhook (trigger)</span>
+<span class="arrow">        │</span>
+<span class="arrow">        ▼</span>
+<span class="done">  IncidentResponseWorkflow</span>   <span class="comment">← Temporal, deterministic loop  ✓ built</span>
+<span class="arrow">        │</span>
+<span class="arrow">        ├─ Activity:</span> <span class="done">call_mcp_tool("get_telemetry_context")</span>  <span class="comment">← stub ✓</span>
+<span class="arrow">        │       └─</span> <span class="empty">MCP server</span> <span class="arrow">→</span> <span class="empty">telemetry pipeline</span> <span class="arrow">→ eBPF mock spans</span>
+<span class="arrow">        │</span>
+<span class="arrow">        ├─ Activity:</span> <span class="done">call_mcp_tool("analyze_root_cause")</span>   <span class="comment">← stub ✓</span>
+<span class="arrow">        │       └─</span> <span class="empty">MCP server</span> <span class="arrow">→</span> <span class="empty">LLM inference</span> <span class="arrow">→ compensation plan</span>
+<span class="arrow">        │</span>
+<span class="arrow">        ├─ [waits for Signal: approve_rollback]</span>            <span class="comment">← operator HITL gate ✓</span>
+<span class="arrow">        │</span>
+<span class="arrow">        └─ Activity:</span> <span class="done">execute_compensating_transaction × N</span>  <span class="comment">← stub ✓</span>
+<span class="arrow">                └─</span> <span class="empty">mock microservices</span> <span class="arrow">→ /cancelOrder, /refundPayment …</span>
+
+  <span class="done">■ built &amp; working</span>   <span class="empty">■ empty — your work area</span>
+  </div>
+
+  
+  <h2>Five Architecture Pillars</h2>
+  <div class="pillars">
+    <div class="pillar">
+      <div class="pillar-title">Durable Execution</div>
+      <div class="pillar-tech">Temporal.io</div>
+      <p>Fault-oblivious orchestration loop. Crashes mid-incident and replays from event history without losing state.</p>
+    </div>
+    <div class="pillar">
+      <div class="pillar-title">Agent Tool Calling</div>
+      <div class="pillar-tech">MCP · stateless 2026-07-28</div>
+      <p>Every request is a self-describing POST. No session handshake. Auth via header on every call.</p>
+    </div>
+    <div class="pillar">
+      <div class="pillar-title">Long-running Actions</div>
+      <div class="pillar-tech">MCP Tasks extension</div>
+      <p>Async task handles with explicit state: <code>working</code> → <code>input_required</code> → <code>completed</code>.</p>
+    </div>
+    <div class="pillar">
+      <div class="pillar-title">Ground-truth Telemetry</div>
+      <div class="pillar-tech">eBPF mock + OpenTelemetry</div>
+      <p>Zero-instrumentation kernel trace simulation. ~2.4% CPU overhead. Structured as OTLP spans.</p>
+    </div>
+    <div class="pillar">
+      <div class="pillar-title">Dynamic Rollbacks</div>
+      <div class="pillar-tech">Saga Orchestration</div>
+      <p>Compensating transactions fanned out in parallel. Idempotent. No two-phase commit.</p>
+    </div>
+  </div>
+
+  
+  <h2>Local Setup — Do This First</h2>
+  <ol class="steps">
+    <li>
+      <div class="step-num">1</div>
+      <div>
+        <strong>Clone &amp; install dependencies</strong>
+        <p><code>git clone &lt;repo-url&gt; &amp;&amp; cd ibmbobhackathon</code><br />
+           <code>python -m venv .venv &amp;&amp; source .venv/bin/activate</code><br />
+           <code>pip install -r requirements.txt</code></p>
+      </div>
+    </li>
+    <li>
+      <div class="step-num">2</div>
+      <div>
+        <strong>Create your <code>.env</code> file</strong>
+        <p>Copy the table in the Environment Variables section below. Never commit this file.</p>
+      </div>
+    </li>
+    <li>
+      <div class="step-num">3</div>
+      <div>
+        <strong>Start the Temporal dev server</strong>
+        <p><code>docker run --rm -p 7233:7233 -p 8080:8080 temporalio/auto-setup:latest</code><br />
+        Web UI at <code>http://localhost:8080</code></p>
+      </div>
+    </li>
+    <li>
+      <div class="step-num">4</div>
+      <div>
+        <strong>Start the Temporal worker</strong>
+        <p><code>python -m sre_swarm.worker</code> — leave this running. It listens on the <code>sre-swarm</code> task queue.</p>
+      </div>
+    </li>
+    <li>
+      <div class="step-num">5</div>
+      <div>
+        <strong>Fire a test incident</strong>
+        <p><code>python -m sre_swarm.scripts.trigger_incident</code><br />
+        Then approve it: <code>temporal workflow signal --workflow-id &lt;id&gt; --name approve_rollback</code></p>
+      </div>
+    </li>
+  </ol>
+
+  
+  <h2>The Golden Rule — Workflows vs Activities</h2>
+  <div class="rule-box">
+    <h3>Workflows must be 100% deterministic. All I/O lives in Activities.</h3>
+    <table class="rule-table">
+      <tr>
+        <th>✅ Allowed inside a Workflow</th>
+        <th>❌ Never inside a Workflow</th>
+      </tr>
+      <tr>
+        <td><code>workflow.execute_activity(...)</code></td>
+        <td><code>httpx.get(...)</code> or any network call</td>
+      </tr>
+      <tr>
+        <td><code>workflow.wait_condition(...)</code></td>
+        <td>LLM API calls</td>
+      </tr>
+      <tr>
+        <td><code>workflow.now()</code></td>
+        <td><code>datetime.now()</code> or <code>time.time()</code></td>
+      </tr>
+      <tr>
+        <td><code>asyncio.gather()</code> over activity futures</td>
+        <td><code>random.random()</code> or any non-deterministic value</td>
+      </tr>
+      <tr>
+        <td>Pure data transformation</td>
+        <td>File I/O, environment reads, subprocess calls</td>
+      </tr>
+    </table>
+    <p style="margin-top:10px;font-size:12px;color:#57606a">
+      If you are unsure — put it in an Activity. Temporal retries Activities safely. It cannot safely retry I/O inside a Workflow.
+    </p>
+  </div>
+
+  
+  <h2>Team Task Board</h2>
+  <div class="team-grid">
+
+    
+    <div class="team-card">
+      <div class="team-card-header">
+        <div class="team-badge badge-a">A</div>
+        <div>
+          <div class="team-card-title">MCP Server</div>
+          <div class="team-card-path">sre_swarm/mcp/</div>
+        </div>
+      </div>
+      <ul class="task-list">
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Create <code>sre_swarm/mcp/server.py</code>
+            <span class="task-note">FastAPI, single POST /mcp route. No sessions.</span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Validate stateless headers on every request
+            <span class="task-note"><code>Mcp-Protocol-Version: 2026-07-28</code>, <code>Mcp-Method</code>, <code>Authorization</code></span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Tool handler: <code>get_telemetry_context</code>
+            <span class="task-note">Calls telemetry pipeline (coordinate with Team B)</span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Tool handler: <code>analyze_root_cause</code>
+            <span class="task-note">LLM call → returns root_cause + compensations list</span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">MCP Tasks: async task handles
+            <span class="task-note">States: <code>working</code> → <code>input_required</code> → <code>completed</code></span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Un-comment real HTTP block in <code>activities/mcp_tools.py</code>
+            <span class="task-note">Remove stub dict once server responds correctly</span>
+          </span>
+        </li>
+      </ul>
+      <div class="first-file"><strong>Start here:</strong> <code>sre_swarm/activities/mcp_tools.py</code> line 79 — the commented-out block is the exact request shape your server must accept.</div>
+    </div>
+
+    
+    <div class="team-card">
+      <div class="team-card-header">
+        <div class="team-badge badge-b">B</div>
+        <div>
+          <div class="team-card-title">Telemetry Pipeline</div>
+          <div class="team-card-path">sre_swarm/telemetry/</div>
+        </div>
+      </div>
+      <ul class="task-list">
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Create <code>sre_swarm/telemetry/pipeline.py</code>
+            <span class="task-note"><code>get_spans(trace_ids, service) → list[dict]</code></span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Mock eBPF network flow capture
+            <span class="task-note">Annotate with <code>cpu_overhead_pct: 2.4</code> per spec</span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Realistic error scenarios in generated spans
+            <span class="task-note">HTTP 500 spike, timeout &gt;4 s, cascade failure</span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Span fixture files
+            <span class="task-note"><code>happy_path.json</code>, <code>payment_timeout.json</code>, <code>cascade_failure.json</code></span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Wire into MCP tool handler (coordinate with Team A)</span>
+        </li>
+      </ul>
+      <div class="first-file"><strong>Required span fields:</strong> <code>trace_id</code>, <code>span_id</code>, <code>service</code>, <code>status_code</code>, <code>latency_ms</code>, <code>error</code>, <code>timestamp</code></div>
+    </div>
+
+    
+    <div class="team-card">
+      <div class="team-card-header">
+        <div class="team-badge badge-c">C</div>
+        <div>
+          <div class="team-card-title">Mock Microservices</div>
+          <div class="team-card-path">sre_swarm/mock_services/</div>
+        </div>
+      </div>
+      <ul class="task-list">
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Create <code>sre_swarm/mock_services/app.py</code>
+            <span class="task-note">FastAPI on port 9090. In-memory state dict is fine.</span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text"><code>POST /placeOrder</code>
+            <span class="task-note">Simulates partial failure via <code>PAYMENT_FAILURE_RATE</code> env var</span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text"><code>POST /cancelOrder</code> — idempotent
+            <span class="task-note">Return 409 if already cancelled. This is a success in the Saga.</span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text"><code>POST /chargePayment</code> + <code>POST /refundPayment</code>
+            <span class="task-note">/refundPayment must also be idempotent (409 = success)</span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Read-only status endpoints
+            <span class="task-note"><code>GET /orders/{id}</code> and <code>GET /payments/{id}</code></span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Un-comment real HTTP block in <code>activities/saga.py</code>
+            <span class="task-note">Remove stub return once mock services respond correctly</span>
+          </span>
+        </li>
+      </ul>
+      <div class="first-file"><strong>Start here:</strong> <code>sre_swarm/activities/saga.py</code> line 62 — the commented-out block is the exact request your service must accept.</div>
+    </div>
+
+    
+    <div class="team-card">
+      <div class="team-card-header">
+        <div class="team-badge badge-d">D</div>
+        <div>
+          <div class="team-card-title">Workflow Enhancements</div>
+          <div class="team-card-path">sre_swarm/workflows/</div>
+        </div>
+      </div>
+      <ul class="task-list">
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Add Signal: <code>request_more_info(question: str)</code>
+            <span class="task-note">Re-runs RCA with operator-provided context</span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Add 2-hour overall workflow timeout + escalation
+            <span class="task-note">Calls a <code>notify_escalation</code> Activity on breach</span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Create <code>activities/notifications.py</code>
+            <span class="task-note">Stub to log; TODO wire to Slack / PagerDuty</span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Register new activities in <code>worker.py</code></span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Write workflow tests
+            <span class="task-note"><code>tests/test_incident_response.py</code> using <code>temporalio.testing.WorkflowEnvironment</code></span>
+          </span>
+        </li>
+        <li>
+          <span class="check"><span class="check-box"></span></span>
+          <span class="task-text">Test: happy path, rejection, approval timeout</span>
+        </li>
+      </ul>
+      <div class="first-file"><strong>Start here:</strong> <code>sre_swarm/workflows/incident_response.py</code> — read the whole file. The Signal/Query patterns are already established; follow them.</div>
+    </div>
+
+  </div>
+
+  
+  <h2>Environment Variables</h2>
+  <table class="env-table">
+    <tr>
+      <th>Variable</th>
+      <th>Default</th>
+      <th>Owner</th>
+      <th>Notes</th>
+    </tr>
+    <tr>
+      <td><code>TEMPORAL_HOST</code></td>
+      <td><code>localhost:7233</code></td>
+      <td><span class="owner owner-d">D</span></td>
+      <td>Local dev server address</td>
+    </tr>
+    <tr>
+      <td><code>MCP_SERVER_URL</code></td>
+      <td><code>http://localhost:8080</code></td>
+      <td><span class="owner owner-a">A</span></td>
+      <td>Where the MCP server listens</td>
+    </tr>
+    <tr>
+      <td><code>MCP_API_KEY</code></td>
+      <td><code>dev-key</code></td>
+      <td><span class="owner owner-a">A</span></td>
+      <td>Passed as <code>Authorization: Bearer</code> on every MCP request</td>
+    </tr>
+    <tr>
+      <td><code>WATSONX_API_KEY</code></td>
+      <td>—</td>
+      <td><span class="owner owner-a">A</span></td>
+      <td>Required for real LLM inference in <code>analyze_root_cause</code></td>
+    </tr>
+    <tr>
+      <td><code>WATSONX_PROJECT_ID</code></td>
+      <td>—</td>
+      <td><span class="owner owner-a">A</span></td>
+      <td>watsonx project identifier</td>
+    </tr>
+    <tr>
+      <td><code>MOCK_SERVICES_URL</code></td>
+      <td><code>http://localhost:9090</code></td>
+      <td><span class="owner owner-c">C</span></td>
+      <td>Base URL for /cancelOrder, /refundPayment etc.</td>
+    </tr>
+    <tr>
+      <td><code>PAYMENT_FAILURE_RATE</code></td>
+      <td><code>0.3</code></td>
+      <td><span class="owner owner-c">C</span></td>
+      <td>Probability of simulated payment failure (0.0 – 1.0)</td>
+    </tr>
+  </table>
+
+  
+  <h2>Gotchas &amp; Known Traps</h2>
+
+  <div class="gotcha">
+    <div class="gotcha-title">⚠ datetime.now() inside a Workflow breaks replay</div>
+    <p>Temporal's replay engine must reproduce the exact same value it recorded. Use <code>workflow.now()</code> instead. <code>datetime.now()</code> will differ on replay and cause a non-determinism error.</p>
+  </div>
+
+  <div class="gotcha">
+    <div class="gotcha-title">⚠ Modules that do I/O at import time will crash the Workflow sandbox</div>
+    <p>Wrap all Activity imports inside <code>with workflow.unsafe.imports_passed_through():</code>. This is already done in <code>incident_response.py</code> — follow that exact pattern for any new Activity you add.</p>
+  </div>
+
+  <div class="gotcha">
+    <div class="gotcha-title">⚠ Activity retries are independent — the Workflow does not fail on activity failure</div>
+    <p>If <code>call_mcp_tool</code> fails 3 times, the workflow pauses and waits. It does not propagate a workflow failure. Design Activities to be idempotent and retry-safe.</p>
+  </div>
+
+  <div class="gotcha">
+    <div class="gotcha-title">⚠ 409 from a compensation endpoint means "already done" — treat it as success</div>
+    <p>The Saga fan-out may replay if the worker crashes mid-execution. Your <code>/cancelOrder</code> and <code>/refundPayment</code> endpoints must return 409 for duplicate calls. The <code>execute_compensating_transaction</code> Activity already handles 409 as a success — don't change that behaviour.</p>
+  </div>
+
+  <div class="gotcha">
+    <div class="gotcha-title">⚠ The MCP server must be completely stateless</div>
+    <p>Do not store session context between requests. Every <code>POST /mcp</code> must be fully self-describing. Auth context is delivered by the <code>Authorization</code> header on every single request — not established once at connection time.</p>
+  </div>
+
+  
+  <div class="footer">Made with IBM Bob</div>
+
+</div>
+</body>
+</html>

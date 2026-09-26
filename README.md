@@ -44,7 +44,8 @@ sre_swarm/
 ├── workflows/       # Deterministic Temporal Workflow definitions
 ├── activities/      # MCP calls, Saga compensations, post-rollback checks
 ├── mcp/             # Stateless MCP server (2026-07-28 spec)
-├── dashboard/       # Live incident UI and webhook intake
+├── dashboard/       # Web UI, webhook intake, and landing page at /
+├── landing/         # Public marketing page (served from dashboard app)
 ├── telemetry/       # Mock eBPF + OpenTelemetry ingestion pipeline
 └── worker.py        # Temporal Worker entrypoint
 ```
@@ -75,7 +76,8 @@ cp .env.example .env
 docker compose up --build
 ```
 
-- **Dashboard:** http://localhost:7080  
+- **Landing page:** http://localhost:7080/  
+- **Dashboard:** http://localhost:7080/dashboard  
 - **Temporal UI:** http://localhost:8080  
 
 Compose runs Temporal’s **dev server with in-memory persistence**. Restarting the stack clears workflow history—trigger a fresh incident after `docker compose up`.
@@ -96,7 +98,7 @@ docker run --rm -p 7233:7233 -p 8080:8080 temporalio/temporal:latest \
 python -m sre_swarm.mock_services.app   # :9090
 python -m sre_swarm.mcp.server          # :8081
 python -m sre_swarm.worker
-python -m sre_swarm.dashboard.app       # :7080
+python -m sre_swarm.dashboard.app       # :7080 — landing at /, dashboard at /dashboard
 ```
 
 ## Tests

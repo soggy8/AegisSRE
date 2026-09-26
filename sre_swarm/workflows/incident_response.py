@@ -62,6 +62,7 @@ class IncidentState:
     # Human approval: set via Signal when operator approves the rollback plan
     rollback_approved: bool = False
     resolution_notes: str = ""
+    extra_context: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +104,12 @@ class IncidentResponseWorkflow:
         self._state.resolution_notes = f"Rollback rejected by operator: {reason}"
         self._state.status = IncidentStatus.FAILED
 
+    @workflow.signal
+    def request_more_info(self, question: str)  -> None:
+        """Operator asks a follow-up question; triggers re-analysis with extra context."""
+        self._state.extra_context.append(question)
+        self._state.rollback_approved = False
+        self._state.status = IncidentStatus.ANALYZING
     # ------------------------------------------------------------------
     # Queries — read-only inspection without side-effects
     # ------------------------------------------------------------------
@@ -181,7 +188,11 @@ class IncidentResponseWorkflow:
         self._state.status = IncidentStatus.REMEDIATING
         try:
             await workflow.wait_condition(
-                lambda: self._state.rollback_approved or self._state.status == IncidentStatus.FAILED,
+                lambda: (
+                    self._state.rollback_approved
+                    or self._state.status == IncidentStatus.FAILED
+                    or self._state.status == IncidentStatus.ANALYZING
+                ),
                 timeout=timedelta(minutes=30),
             )
         except asyncio.TimeoutError:
@@ -191,6 +202,50 @@ class IncidentResponseWorkflow:
 
         if self._state.status == IncidentStatus.FAILED:
             return self._state.resolution_notes
+
+        # -----------------------------------------------------------------
+        # Step 3b — Re-run root-cause analysis if operator asked a question
+        # -----------------------------------------------------------------
+        while self._state.status == IncidentStatus.ANALYZING:
+            workflow.logger.info(
+                "Re-running root-cause analysis with extra context",
+                extra={"extra_context": self._state.extra_context},
+            )
+            rca_result = await workflow.execute_activity(
+                call_mcp_tool,
+                MCPToolRequest(
+                    tool_name="analyze_root_cause",
+                    arguments={
+                        "alert_summary": incident.alert_summary,
+                        "telemetry_context": telemetry_result.output,
+                        "extra_context": self._state.extra_context,
+                    },
+                ),
+                start_to_close_timeout=timedelta(seconds=60),
+                retry_policy=retry,
+            )
+            self._state.root_cause = rca_result.output.get("root_cause", "unknown")
+            self._state.pending_compensations = [
+                CompensationRequest(**c)
+                for c in rca_result.output.get("compensations", [])
+            ]
+            self._state.status = IncidentStatus.REMEDIATING
+            try:
+                await workflow.wait_condition(
+                    lambda: (
+                        self._state.rollback_approved
+                        or self._state.status == IncidentStatus.FAILED
+                        or self._state.status == IncidentStatus.ANALYZING
+                    ),
+                    timeout=timedelta(minutes=30),
+                )
+            except asyncio.TimeoutError:
+                self._state.status = IncidentStatus.FAILED
+                self._state.resolution_notes = "Timed out waiting for operator approval (30 min)."
+                return self._state.resolution_notes
+
+            if self._state.status == IncidentStatus.FAILED:
+                return self._state.resolution_notes
 
         # -----------------------------------------------------------------
         # Step 4 — Execute Saga compensating transactions

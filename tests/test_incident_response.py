@@ -1,309 +1,366 @@
 """
-Tests for IncidentResponseWorkflow
-====================================
-Uses temporalio.testing.WorkflowEnvironment (time-skipping) so tests run
-instantly without a real Temporal server.
+Test suite for IncidentResponseWorkflow
+========================================
+Uses Temporal's built-in time-skipping test environment so tests run
+in-process — no Docker, no real Temporal server required.
 
 Run with:
-    pytest tests/test_incident_response.py -v
+    pytest tests/
+
+Test matrix:
+  test_happy_path        — analyze_root_cause returns zero compensations → RESOLVED immediately
+  test_approval_path     — compensations present, approve_rollback signal fires → RESOLVED
+  test_rejection_path    — compensations present, reject_rollback signal fires → FAILED
+  test_timeout_path      — no signal within 30 min, time skipped → FAILED (no crash)
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import timedelta
 
 import pytest
-
+import pytest_asyncio
 from temporalio import activity
+from temporalio.client import WorkflowFailureError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
+from sre_swarm.activities.mcp_tools import MCPToolRequest, MCPToolResult
+from sre_swarm.activities.saga import CompensationRequest
 from sre_swarm.workflows.incident_response import (
     IncidentInput,
     IncidentResponseWorkflow,
     IncidentStatus,
 )
-from sre_swarm.activities.mcp_tools import MCPToolRequest, MCPToolResult
-from sre_swarm.activities.saga import CompensationRequest
+
+# ---------------------------------------------------------------------------
+# Shared fixtures
+# ---------------------------------------------------------------------------
+
+TASK_QUEUE = "test-sre-swarm"
+
+# Collects analyze_root_cause call arguments for test_request_more_info_then_approve.
+# Reset to [] at the start of that test.
+_rca_calls: list[dict] = []
+
+_BASE_INCIDENT = IncidentInput(
+    incident_id="INC-TEST-001",
+    affected_service="payment-service",
+    alert_summary="HTTP 500 spike on /checkout",
+    trace_ids=["trace-abc", "trace-def"],
+)
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Activity mocks
 # ---------------------------------------------------------------------------
 
-def _make_incident(**kwargs) -> IncidentInput:
-    defaults = dict(
-        incident_id="INC-TEST-001",
-        affected_service="payment-service",
-        alert_summary="HTTP 500 spike on /checkout",
-        trace_ids=["trace-001"],
+@activity.defn(name="call_mcp_tool")
+async def _mock_call_mcp_tool_no_compensations(request: MCPToolRequest) -> MCPToolResult:
+    """Simulates get_telemetry_context + analyze_root_cause with zero compensations."""
+    if request.tool_name == "get_telemetry_context":
+        return MCPToolResult(
+            tool_name="get_telemetry_context",
+            output={"spans": [], "cpu_overhead_pct": 2.4},
+        )
+    # analyze_root_cause — empty compensation list → happy path
+    return MCPToolResult(
+        tool_name="analyze_root_cause",
+        output={
+            "root_cause": "transient blip, self-healed",
+            "confidence": 0.99,
+            "compensations": [],
+        },
     )
-    defaults.update(kwargs)
-    return IncidentInput(**defaults)
+
+
+@activity.defn(name="call_mcp_tool")
+async def _mock_call_mcp_tool_two_compensations(request: MCPToolRequest) -> MCPToolResult:
+    """Simulates analyze_root_cause returning 2 compensations."""
+    if request.tool_name == "get_telemetry_context":
+        return MCPToolResult(
+            tool_name="get_telemetry_context",
+            output={"spans": [], "cpu_overhead_pct": 2.4},
+        )
+    return MCPToolResult(
+        tool_name="analyze_root_cause",
+        output={
+            "root_cause": "Payment service timeout caused order saga to partially commit",
+            "confidence": 0.91,
+            "compensations": [
+                {"endpoint": "/cancelOrder",   "method": "POST", "payload": {"order_id": "ord-789"}},
+                {"endpoint": "/refundPayment", "method": "POST", "payload": {"payment_id": "pay-456"}},
+            ],
+        },
+    )
+
+
+@activity.defn(name="execute_compensating_transaction")
+async def _mock_execute_compensating_transaction(request: CompensationRequest) -> dict:
+    """Returns a success dict without making any HTTP calls."""
+    return {"status": "ok", "endpoint": request.endpoint}
+
+
+@activity.defn(name="call_mcp_tool")
+async def _mock_call_mcp_tool_tracking(request: MCPToolRequest) -> MCPToolResult:
+    """Records every analyze_root_cause invocation into _rca_calls for assertion."""
+    if request.tool_name == "get_telemetry_context":
+        return MCPToolResult(
+            tool_name="get_telemetry_context",
+            output={"spans": [], "cpu_overhead_pct": 2.4},
+        )
+    _rca_calls.append(dict(request.arguments))
+    return MCPToolResult(
+        tool_name="analyze_root_cause",
+        output={
+            "root_cause": "Payment service timeout caused order saga to partially commit",
+            "confidence": 0.91,
+            "compensations": [
+                {"endpoint": "/cancelOrder", "method": "POST", "payload": {"order_id": "ord-789"}},
+            ],
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
-# Happy path — no compensations needed
+# Test 1 — Happy path (zero compensations → RESOLVED immediately)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_happy_path_resolved_immediately() -> None:
+async def test_happy_path() -> None:
     """
-    If analyze_root_cause returns no compensations the workflow resolves
-    immediately without waiting for a signal.
+    When analyze_root_cause returns no compensations the workflow must resolve
+    immediately — no signal required, no compensating transactions executed.
     """
-    @activity.defn(name="call_mcp_tool")
-    async def mock_call_mcp_tool(req: MCPToolRequest) -> MCPToolResult:
-        if req.tool_name == "get_telemetry_context":
-            return MCPToolResult(
-                tool_name="get_telemetry_context",
-                output={"spans": [], "cpu_overhead_pct": 2.4},
-            )
-        # analyze_root_cause: no compensations
-        return MCPToolResult(
-            tool_name="analyze_root_cause",
-            output={"root_cause": "Transient blip, no action needed", "confidence": 0.8, "compensations": []},
-        )
-
-    @activity.defn(name="execute_compensating_transaction")
-    async def mock_execute_compensation(req: CompensationRequest) -> dict:
-        return {"status": "ok"}
-
     async with await WorkflowEnvironment.start_time_skipping() as env:
         async with Worker(
             env.client,
-            task_queue="test-queue",
+            task_queue=TASK_QUEUE,
             workflows=[IncidentResponseWorkflow],
-            activities=[mock_call_mcp_tool, mock_execute_compensation],
+            activities=[
+                _mock_call_mcp_tool_no_compensations,
+                _mock_execute_compensating_transaction,
+            ],
         ):
-            handle = await env.client.start_workflow(
+            result: str = await env.client.execute_workflow(
                 IncidentResponseWorkflow.run,
-                _make_incident(),
+                _BASE_INCIDENT,
                 id="test-happy-path",
-                task_queue="test-queue",
+                task_queue=TASK_QUEUE,
             )
-            result = await handle.result()
-            assert "No compensating transactions required" in result
+
+    assert result == "No compensating transactions required."
 
 
 # ---------------------------------------------------------------------------
-# Approval path — compensations present, operator approves
+# Test 2 — Approval path (compensations + approve signal → RESOLVED)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_approval_path_resolved_after_signal() -> None:
+async def test_approval_path() -> None:
     """
-    When compensations are present the workflow waits for approve_rollback.
-    After the signal it executes compensations and resolves.
+    When compensations are present the workflow waits for operator approval.
+    Sending approve_rollback should let it run both compensating transactions
+    and reach RESOLVED.
     """
-    @activity.defn(name="call_mcp_tool")
-    async def mock_call_mcp_tool(req: MCPToolRequest) -> MCPToolResult:
-        if req.tool_name == "get_telemetry_context":
-            return MCPToolResult(
-                tool_name="get_telemetry_context",
-                output={
-                    "spans": [{
-                        "trace_id": "t1", "service": "payment-service",
-                        "status_code": 500, "latency_ms": 4700,
-                        "error": True, "timestamp": "2025-01-01T00:00:00Z",
-                    }],
-                    "cpu_overhead_pct": 2.4,
-                },
-            )
-        return MCPToolResult(
-            tool_name="analyze_root_cause",
-            output={
-                "root_cause": "Payment timeout caused partial saga commit",
-                "confidence": 0.91,
-                "compensations": [
-                    {"endpoint": "/cancelOrder",   "method": "POST", "payload": {"order_id": "ord-1"}},
-                    {"endpoint": "/refundPayment", "method": "POST", "payload": {"payment_id": "pay-1"}},
-                ],
-            },
-        )
-
-    @activity.defn(name="execute_compensating_transaction")
-    async def mock_execute_compensation(req: CompensationRequest) -> dict:
-        return {"status": "compensated", "endpoint": req.endpoint}
-
     async with await WorkflowEnvironment.start_time_skipping() as env:
         async with Worker(
             env.client,
-            task_queue="test-queue",
+            task_queue=TASK_QUEUE,
             workflows=[IncidentResponseWorkflow],
-            activities=[mock_call_mcp_tool, mock_execute_compensation],
+            activities=[
+                _mock_call_mcp_tool_two_compensations,
+                _mock_execute_compensating_transaction,
+            ],
         ):
             handle = await env.client.start_workflow(
                 IncidentResponseWorkflow.run,
-                _make_incident(),
+                _BASE_INCIDENT,
                 id="test-approval-path",
-                task_queue="test-queue",
+                task_queue=TASK_QUEUE,
             )
 
-            # Send approval signal to unblock the workflow
+            # Poll until the workflow enters REMEDIATING (waiting for signal).
+            # auto_time_skipping is suspended here so we don't accidentally
+            # skip past the 30-minute timeout before sending the signal.
+            with env.auto_time_skipping_disabled():
+                for _ in range(20):
+                    state: dict = await handle.query(IncidentResponseWorkflow.get_status)
+                    if state["status"] == IncidentStatus.REMEDIATING:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    pytest.fail(
+                        f"Workflow never reached REMEDIATING; last status: {state['status']}"
+                    )
+
             await handle.signal(IncidentResponseWorkflow.approve_rollback)
-            result = await handle.result()
-            assert "Resolved" in result
-            assert "2 compensating transaction" in result
+            result: str = await handle.result()
+
+    assert "Resolved" in result
+    assert "2 compensating transaction(s)" in result
 
 
 # ---------------------------------------------------------------------------
-# Rejection path
+# Test 3 — Rejection path (reject_rollback signal → FAILED with reason)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_rejection_path_fails_with_reason() -> None:
+async def test_rejection_path() -> None:
     """
-    When the operator sends reject_rollback the workflow sets status=FAILED
-    and includes the rejection reason in the resolution notes.
+    Sending reject_rollback with a reason string must cause the workflow to
+    set status=FAILED and embed the reason in resolution_notes.
     """
-    @activity.defn(name="call_mcp_tool")
-    async def mock_call_mcp_tool(req: MCPToolRequest) -> MCPToolResult:
-        if req.tool_name == "get_telemetry_context":
-            return MCPToolResult(
-                tool_name="get_telemetry_context",
-                output={"spans": [], "cpu_overhead_pct": 2.4},
-            )
-        return MCPToolResult(
-            tool_name="analyze_root_cause",
-            output={
-                "root_cause": "DB overload",
-                "confidence": 0.7,
-                "compensations": [
-                    {"endpoint": "/cancelOrder", "method": "POST", "payload": {"order_id": "ord-2"}},
-                ],
-            },
-        )
-
-    @activity.defn(name="execute_compensating_transaction")
-    async def mock_execute_compensation(req: CompensationRequest) -> dict:
-        return {"status": "ok"}
+    rejection_reason = "Rollback too risky during peak traffic"
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
         async with Worker(
             env.client,
-            task_queue="test-queue",
+            task_queue=TASK_QUEUE,
             workflows=[IncidentResponseWorkflow],
-            activities=[mock_call_mcp_tool, mock_execute_compensation],
+            activities=[
+                _mock_call_mcp_tool_two_compensations,
+                _mock_execute_compensating_transaction,
+            ],
         ):
             handle = await env.client.start_workflow(
                 IncidentResponseWorkflow.run,
-                _make_incident(),
+                _BASE_INCIDENT,
                 id="test-rejection-path",
-                task_queue="test-queue",
+                task_queue=TASK_QUEUE,
             )
 
-            await handle.signal(IncidentResponseWorkflow.reject_rollback, "false alarm")
-            result = await handle.result()
-            # In a time-skipping env the workflow may time out before the signal
-            # is processed; accept either the rejection message or the timeout
-            # message as a correct "graceful failure" outcome.
-            assert ("rejected by operator" in result and "false alarm" in result) or "Timed out" in result
+            # Wait for REMEDIATING before sending the rejection signal.
+            with env.auto_time_skipping_disabled():
+                for _ in range(20):
+                    state: dict = await handle.query(IncidentResponseWorkflow.get_status)
+                    if state["status"] == IncidentStatus.REMEDIATING:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    pytest.fail(
+                        f"Workflow never reached REMEDIATING; last status: {state['status']}"
+                    )
+
+            await handle.signal(IncidentResponseWorkflow.reject_rollback, rejection_reason)
+            result: str = await handle.result()
+
+    assert rejection_reason in result
+    assert "Rollback rejected by operator" in result
 
 
 # ---------------------------------------------------------------------------
-# Timeout path
+# Test 4 — Timeout path (no signal → FAILED, not an exception crash)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_timeout_path_fails_gracefully() -> None:
+async def test_timeout_path() -> None:
     """
-    If no signal arrives within the approval timeout the workflow sets
-    status=FAILED and returns a timeout message — it must NOT crash.
+    If neither approve_rollback nor reject_rollback is sent within 30 minutes
+    the workflow must return FAILED with a timeout message — not raise an
+    unhandled exception.
+
+    WorkflowEnvironment.start_time_skipping() automatically advances virtual
+    time when awaiting a workflow result, so the 30-minute wait_condition
+    timeout fires without real wall-clock delay.
     """
-    @activity.defn(name="call_mcp_tool")
-    async def mock_call_mcp_tool(req: MCPToolRequest) -> MCPToolResult:
-        if req.tool_name == "get_telemetry_context":
-            return MCPToolResult(
-                tool_name="get_telemetry_context",
-                output={"spans": [], "cpu_overhead_pct": 2.4},
-            )
-        return MCPToolResult(
-            tool_name="analyze_root_cause",
-            output={
-                "root_cause": "High latency on DB queries",
-                "confidence": 0.65,
-                "compensations": [
-                    {"endpoint": "/cancelOrder", "method": "POST", "payload": {"order_id": "ord-3"}},
-                ],
-            },
-        )
-
-    @activity.defn(name="execute_compensating_transaction")
-    async def mock_execute_compensation(req: CompensationRequest) -> dict:
-        return {"status": "ok"}
-
     async with await WorkflowEnvironment.start_time_skipping() as env:
         async with Worker(
             env.client,
-            task_queue="test-queue",
+            task_queue=TASK_QUEUE,
             workflows=[IncidentResponseWorkflow],
-            activities=[mock_call_mcp_tool, mock_execute_compensation],
+            activities=[
+                _mock_call_mcp_tool_two_compensations,
+                _mock_execute_compensating_transaction,
+            ],
         ):
-            handle = await env.client.start_workflow(
+            # No signal sent — let time skip past the 30-minute approval window.
+            result: str = await env.client.execute_workflow(
                 IncidentResponseWorkflow.run,
-                _make_incident(),
+                _BASE_INCIDENT,
                 id="test-timeout-path",
-                task_queue="test-queue",
+                task_queue=TASK_QUEUE,
             )
 
-            # Time-skipping env fast-forwards past the 30-min approval window
-            result = await handle.result()
-            assert "Timed out" in result
+    assert "Timed out" in result
+    assert "30 min" in result
 
 
 # ---------------------------------------------------------------------------
-# Query: get_status reflects current state
+# Test 5 — request_more_info path (re-analysis with extra context → RESOLVED)
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
-async def test_query_get_status_returns_dict() -> None:
+async def test_request_more_info_then_approve() -> None:
     """
-    A get_status query after the workflow completes returns a dict with
-    the expected keys.
-    """
-    @activity.defn(name="call_mcp_tool")
-    async def mock_call_mcp_tool(req: MCPToolRequest) -> MCPToolResult:
-        if req.tool_name == "get_telemetry_context":
-            return MCPToolResult(
-                tool_name="get_telemetry_context",
-                output={"spans": [], "cpu_overhead_pct": 2.4},
-            )
-        return MCPToolResult(
-            tool_name="analyze_root_cause",
-            output={
-                "root_cause": "Test cause",
-                "confidence": 0.5,
-                "compensations": [
-                    {"endpoint": "/cancelOrder", "method": "POST", "payload": {"order_id": "ord-q"}},
-                ],
-            },
-        )
+    Operator sends request_more_info("is the DB involved?") before approving.
 
-    @activity.defn(name="execute_compensating_transaction")
-    async def mock_execute_compensation(req: CompensationRequest) -> dict:
-        return {"status": "ok"}
+    Assertions:
+      1. analyze_root_cause is called a second time.
+      2. The second call's arguments include the question in extra_context.
+      3. Sending approve_rollback after that resolves the workflow as RESOLVED.
+    """
+    global _rca_calls
+    _rca_calls = []  # reset before this test
 
     async with await WorkflowEnvironment.start_time_skipping() as env:
         async with Worker(
             env.client,
-            task_queue="test-queue",
+            task_queue=TASK_QUEUE,
             workflows=[IncidentResponseWorkflow],
-            activities=[mock_call_mcp_tool, mock_execute_compensation],
+            activities=[
+                _mock_call_mcp_tool_tracking,
+                _mock_execute_compensating_transaction,
+            ],
         ):
             handle = await env.client.start_workflow(
                 IncidentResponseWorkflow.run,
-                _make_incident(),
-                id="test-query-status",
-                task_queue="test-queue",
+                _BASE_INCIDENT,
+                id="test-more-info-path",
+                task_queue=TASK_QUEUE,
             )
 
-            # Approve so the workflow completes in the skipped-time env
-            await handle.signal(IncidentResponseWorkflow.approve_rollback)
-            await handle.result()
+            # Wait for the first REMEDIATING before sending the question.
+            with env.auto_time_skipping_disabled():
+                for _ in range(20):
+                    state: dict = await handle.query(IncidentResponseWorkflow.get_status)
+                    if state["status"] == IncidentStatus.REMEDIATING:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    pytest.fail(
+                        f"Workflow never reached REMEDIATING; last status: {state['status']}"
+                    )
 
-            status_data = await handle.query(IncidentResponseWorkflow.get_status)
-            assert "status"            in status_data
-            assert "root_cause"        in status_data
-            assert "rollback_approved" in status_data
-            assert "resolution_notes"  in status_data
+            # Signal the question — workflow sets status=ANALYZING, wait_condition unblocks,
+            # the while loop fires, re-runs RCA, then sets status back to REMEDIATING.
+            await handle.signal(IncidentResponseWorkflow.request_more_info, "is the DB involved?")
+
+            # Wait for the workflow to re-enter REMEDIATING after the second RCA run.
+            with env.auto_time_skipping_disabled():
+                for _ in range(20):
+                    state = await handle.query(IncidentResponseWorkflow.get_status)
+                    if state["status"] == IncidentStatus.REMEDIATING:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    pytest.fail(
+                        f"Workflow never returned to REMEDIATING after re-analysis; "
+                        f"last status: {state['status']}"
+                    )
+
+            # Now approve — workflow proceeds to COMPENSATING → RESOLVED.
+            await handle.signal(IncidentResponseWorkflow.approve_rollback)
+            result: str = await handle.result()
+
+    # analyze_root_cause must have been called exactly twice (initial + re-run).
+    assert len(_rca_calls) == 2, f"Expected 2 RCA calls, got {len(_rca_calls)}"
+
+    # Second call must carry the question in extra_context.
+    second_call_args = _rca_calls[1]
+    assert "extra_context" in second_call_args
+    assert "is the DB involved?" in second_call_args["extra_context"]
+
+    # Final outcome must be RESOLVED.
+    assert "Resolved" in result

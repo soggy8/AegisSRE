@@ -202,8 +202,11 @@ Respond ONLY with valid JSON in this exact shape — no markdown, no explanation
 }
 
 Available compensation endpoints on the mock microservices at http://localhost:9090:
-  POST /cancelOrder   { "order_id": "<id>" }
-  POST /refundPayment { "payment_id": "<id>" }
+  POST /cancelOrder   { "order_id": "<use the order_id from the span if present>" }
+  POST /refundPayment { "payment_id": "<use the payment_id from the span if present>" }
+
+IMPORTANT: If a span contains an "order_id" or "payment_id" field, you MUST use
+that exact value in the compensation payload. Never invent IDs.
 
 If no compensating transactions are needed, return an empty compensations list.
 """

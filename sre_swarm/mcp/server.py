@@ -37,7 +37,7 @@ load_dotenv()
 
 MCP_API_KEY        = os.getenv("MCP_API_KEY", "dev-key")
 MCP_PROTOCOL       = "2026-07-28"
-MCP_SERVER_PORT    = int(os.getenv("MCP_SERVER_PORT", "8080"))
+MCP_SERVER_PORT    = int(os.getenv("MCP_SERVER_PORT", "8081"))
 
 # Optional LLM credentials — at least one must be set for analyze_root_cause.
 # If neither is present we fall back to a deterministic heuristic so the system

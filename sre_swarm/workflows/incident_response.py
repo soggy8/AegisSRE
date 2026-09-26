@@ -121,6 +121,11 @@ class IncidentResponseWorkflow:
             "root_cause": self._state.root_cause,
             "rollback_approved": self._state.rollback_approved,
             "resolution_notes": self._state.resolution_notes,
+            "compensation_count": len(self._state.pending_compensations),
+            "compensations": [
+                {"endpoint": c.endpoint, "method": c.method, "payload": c.payload}
+                for c in self._state.pending_compensations
+            ],
         }
 
     # ------------------------------------------------------------------

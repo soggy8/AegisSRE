@@ -31,24 +31,23 @@ pip install -r requirements.txt
 
 # 2. Copy env template and fill in values
 cp .env.example .env
+# Add OPENAI_API_KEY=sk-... to .env if you want real LLM root-cause analysis
 
-# 3. Start a local Temporal server (requires Docker)
+# 3. Terminal 1 — Temporal server (web UI at http://localhost:8080)
 docker run --rm -p 7233:7233 -p 8080:8080 temporalio/auto-setup:latest
 
-# 4. Start the mock microservices (Terminal 2)
+# 4. Terminal 2 — Mock microservices  (port 9090)
 python -m sre_swarm.mock_services.app
 
-# 5. Start the MCP server (Terminal 3)
+# 5. Terminal 3 — MCP server  (port 8081)
 python -m sre_swarm.mcp.server
 
-# 6. Start the Temporal worker (Terminal 4)
+# 6. Terminal 4 — Temporal worker
 python -m sre_swarm.worker
 
-# 7. Trigger a test incident (Terminal 5)
-python -m sre_swarm.scripts.trigger_incident
-
-# 8. Approve the rollback plan — copy the workflow ID printed by step 7
-temporal workflow signal --workflow-id <id> --name approve_rollback
+# 7. Terminal 5 — Dashboard  → open http://localhost:7080
+python -m sre_swarm.dashboard.app
+# Use the dashboard to trigger incidents and approve/reject rollbacks
 ```
 
 ## Contributing

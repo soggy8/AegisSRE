@@ -7,7 +7,9 @@ Features:
   - Live incident list (polls every 3 s via SSE)
   - Trigger a new test incident with one click
   - Approve or reject a pending rollback with one click
-  - Shows root cause, status, and compensation count
+  - Request more info from the SRE agent (follow-up question)
+  - Shows root cause, resolution notes, status, and compensation count
+  - Webhook intake: POST /incident accepts PagerDuty and Alertmanager payloads
 
 Run with:
     python -m sre_swarm.dashboard.app
@@ -23,7 +25,7 @@ import uuid
 from typing import AsyncGenerator
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 import uvicorn
 
@@ -93,6 +95,8 @@ _HTML = """<!DOCTYPE html>
   button.danger:hover { background: #dc2626; }
   button.success { background: #22c55e; }
   button.success:hover { background: #16a34a; }
+  button.warning { background: #f59e0b; }
+  button.warning:hover { background: #d97706; }
   button.small { padding: 4px 10px; font-size: 12px; }
 
   #status-dot {
@@ -129,14 +133,16 @@ _HTML = """<!DOCTYPE html>
 
   .mono { font-family: "JetBrains Mono", "Fira Code", monospace; font-size: 12px; }
   .muted { color: #64748b; font-size: 12px; }
-  .root-cause { max-width: 360px; font-size: 12px; color: #94a3b8; }
+  .root-cause { max-width: 300px; font-size: 12px; color: #94a3b8; }
+  .resolution { max-width: 300px; font-size: 12px; color: #86efac; font-style: italic; }
+  .resolution.failed { color: #fca5a5; }
   #empty { text-align: center; padding: 48px; color: #64748b; }
   #error-banner {
     display: none; background: #450a0a; color: #fca5a5;
     border: 1px solid #7f1d1d; border-radius: 6px;
     padding: 10px 14px; margin-bottom: 16px; font-size: 13px;
   }
-  .actions { display: flex; gap: 6px; }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
   #trigger-btn { display: flex; align-items: center; gap: 8px; }
   #trigger-spinner {
     display: none; width: 14px; height: 14px;
@@ -171,12 +177,13 @@ _HTML = """<!DOCTYPE html>
       <th>Service</th>
       <th>Status</th>
       <th>Root cause</th>
+      <th>Resolution</th>
       <th>Compensations</th>
       <th>Actions</th>
     </tr>
   </thead>
   <tbody id="tbody">
-    <tr id="empty"><td colspan="6" id="empty">No incidents yet — click "Trigger incident" to start one.</td></tr>
+    <tr id="empty"><td colspan="7" id="empty">No incidents yet — click "Trigger incident" to start one.</td></tr>
   </tbody>
 </table>
 
@@ -191,6 +198,13 @@ function renderRow(w) {
   const rc = w.root_cause
     ? `<div class="root-cause">${w.root_cause}</div>`
     : '<span class="muted">—</span>';
+
+  // Resolution notes: show for resolved and failed states
+  let resolution = '<span class="muted">—</span>';
+  if (w.resolution_notes) {
+    const cls = w.status === 'failed' ? 'resolution failed' : 'resolution';
+    resolution = `<div class="${cls}" title="${w.resolution_notes}">${w.resolution_notes.length > 80 ? w.resolution_notes.slice(0,80) + '…' : w.resolution_notes}</div>`;
+  }
 
   let comps = '<span class="muted">—</span>';
   if (w.compensation_count != null && w.compensation_count > 0) {
@@ -209,6 +223,7 @@ function renderRow(w) {
       <div class="actions">
         <button class="small success" onclick="approve('${w.workflow_id}')">✓ Approve</button>
         <button class="small danger"  onclick="reject('${w.workflow_id}')">✗ Reject</button>
+        <button class="small warning" onclick="requestMoreInfo('${w.workflow_id}')">? Ask</button>
       </div>`;
   }
 
@@ -217,6 +232,7 @@ function renderRow(w) {
     <td>${w.affected_service || '—'}</td>
     <td>${badge(w.status)}</td>
     <td>${rc}</td>
+    <td>${resolution}</td>
     <td>${comps}</td>
     <td>${actions}</td>`;
 }
@@ -291,6 +307,17 @@ async function reject(workflowId) {
   if (!r.ok) { const b = await r.json(); showError(b.detail || 'Signal failed'); }
 }
 
+async function requestMoreInfo(workflowId) {
+  const question = prompt('Question for the SRE agent:');
+  if (question === null || question.trim() === '') return;
+  const r = await fetch(`/signal/${workflowId}/request_more_info`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question }),
+  });
+  if (!r.ok) { const b = await r.json(); showError(b.detail || 'Signal failed'); }
+}
+
 function showError(msg) {
   const b = document.getElementById('error-banner');
   b.textContent = '⚠ ' + msg;
@@ -327,7 +354,7 @@ async def _workflow_states() -> list[dict]:
                 results.append({
                     "workflow_id": wf_id,
                     "incident_id": wf_id.replace("incident-", ""),
-                    "affected_service": _parse_service(wf_id),
+                    "affected_service": status_data.get("affected_service") or _parse_service(wf_id),
                     "status": str(status_data.get("status", "")).split(".")[-1].lower(),
                     "root_cause": status_data.get("root_cause"),
                     "rollback_approved": status_data.get("rollback_approved", False),
@@ -354,9 +381,11 @@ async def _workflow_states() -> list[dict]:
 
 
 def _parse_service(wf_id: str) -> str:
-    """Best-effort: extract service name from workflow ID."""
-    # workflow IDs look like: incident-INC-ABCD1234
-    return "payment-service"
+    """
+    Best-effort: extract service name from workflow ID.
+    Falls back to 'unknown' — the real value comes from the workflow query.
+    """
+    return "unknown"
 
 
 async def _sse_generator() -> AsyncGenerator[str, None]:
@@ -408,7 +437,156 @@ async def trigger_incident() -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Approve / reject signals
+# Webhook intake — accepts PagerDuty and Alertmanager payloads
+# ---------------------------------------------------------------------------
+
+def _parse_pagerduty(body: dict) -> dict:
+    """
+    Extract incident fields from a PagerDuty webhook v3 payload.
+    https://developer.pagerduty.com/docs/ZG9jOjQ1MTg4ODQ0-overview
+
+    PagerDuty sends a list of events under body["messages"] or body["event"].
+    We extract the first trigger event we find.
+    """
+    # v3 format: {"messages": [{"event": "incident.trigger", "incident": {...}}]}
+    messages = body.get("messages", [])
+    if not messages and "event" in body:
+        # some integrations send a single event at the top level
+        messages = [body]
+
+    for msg in messages:
+        if msg.get("event") not in ("incident.trigger", "incident.triggered"):
+            continue
+        incident_data = msg.get("incident", msg.get("data", {}).get("incident", {}))
+        service_name = (
+            incident_data.get("service", {}).get("summary")
+            or incident_data.get("service", {}).get("name")
+            or "unknown-service"
+        )
+        title = incident_data.get("title") or incident_data.get("description") or "PagerDuty alert"
+        return {
+            "affected_service": service_name,
+            "alert_summary": title,
+            "source": "pagerduty",
+        }
+    return {}
+
+
+def _parse_alertmanager(body: dict) -> dict:
+    """
+    Extract incident fields from an Alertmanager webhook payload.
+    https://prometheus.io/docs/alerting/latest/configuration/#webhook_config
+
+    Alertmanager sends: {"alerts": [{"labels": {...}, "annotations": {...}}], ...}
+    """
+    alerts = body.get("alerts", [])
+    if not alerts:
+        return {}
+
+    # Use the first firing alert
+    alert = alerts[0]
+    labels = alert.get("labels", {})
+    annotations = alert.get("annotations", {})
+
+    service_name = (
+        labels.get("service")
+        or labels.get("job")
+        or labels.get("app")
+        or "unknown-service"
+    )
+    summary = (
+        annotations.get("summary")
+        or annotations.get("description")
+        or annotations.get("message")
+        or labels.get("alertname", "Alertmanager alert")
+    )
+    return {
+        "affected_service": service_name,
+        "alert_summary": summary,
+        "source": "alertmanager",
+    }
+
+
+@app.post("/incident")
+async def intake_incident(request: Request) -> dict:
+    """
+    Webhook intake endpoint.  Accepts:
+      - PagerDuty webhook v3 payload
+      - Alertmanager webhook payload
+      - Raw AegisSRE IncidentInput JSON (pass-through)
+
+    Detects the format automatically and starts an IncidentResponseWorkflow.
+    """
+    from sre_swarm.workflows.incident_response import IncidentInput, IncidentResponseWorkflow  # noqa: PLC0415
+    from fastapi import HTTPException  # noqa: PLC0415
+
+    try:
+        body = await request.json()
+    except Exception:
+        from fastapi import HTTPException  # noqa: PLC0415
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON")
+
+    # ------------------------------------------------------------------
+    # Detect payload format
+    # ------------------------------------------------------------------
+    parsed: dict = {}
+
+    if "incident_id" in body and "affected_service" in body:
+        # Native IncidentInput — pass straight through
+        parsed = {
+            "affected_service": body["affected_service"],
+            "alert_summary": body.get("alert_summary", "Manual trigger"),
+            "trace_ids": body.get("trace_ids", []),
+        }
+    elif "messages" in body or (
+        "event" in body and "incident" in body.get("event", "") or "incident" in body
+    ):
+        # PagerDuty
+        parsed = _parse_pagerduty(body)
+    elif "alerts" in body:
+        # Alertmanager
+        parsed = _parse_alertmanager(body)
+
+    if not parsed:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Unrecognised payload format. "
+                "Expected PagerDuty v3, Alertmanager, or native IncidentInput JSON."
+            ),
+        )
+
+    incident_id = f"INC-{uuid.uuid4().hex[:8].upper()}"
+    incident = IncidentInput(
+        incident_id=incident_id,
+        affected_service=parsed["affected_service"],
+        alert_summary=parsed["alert_summary"],
+        trace_ids=parsed.get("trace_ids", []),
+    )
+
+    try:
+        client = await _get_client()
+        handle = await client.start_workflow(
+            IncidentResponseWorkflow.run,
+            incident,
+            id=f"incident-{incident.incident_id}",
+            task_queue=TASK_QUEUE,
+        )
+        logger.info(
+            "Webhook intake: started workflow id=%s source=%s service=%s",
+            handle.id, parsed.get("source", "native"), incident.affected_service,
+        )
+        return {
+            "workflow_id": handle.id,
+            "incident_id": incident.incident_id,
+            "affected_service": incident.affected_service,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ---------------------------------------------------------------------------
+# Approve / reject / request_more_info signals
 # ---------------------------------------------------------------------------
 
 @app.post("/signal/{workflow_id}/approve")
@@ -434,6 +612,24 @@ async def reject_rollback(workflow_id: str, body: dict = {}) -> dict:
         reason: str = body.get("reason", "")
         await handle.signal(IncidentResponseWorkflow.reject_rollback, reason)
         return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/signal/{workflow_id}/request_more_info")
+async def request_more_info(workflow_id: str, body: dict = {}) -> dict:
+    from sre_swarm.workflows.incident_response import IncidentResponseWorkflow  # noqa: PLC0415
+    from fastapi import HTTPException  # noqa: PLC0415
+    try:
+        client = await _get_client()
+        handle = client.get_workflow_handle(workflow_id)
+        question: str = body.get("question", "")
+        if not question:
+            raise HTTPException(status_code=422, detail="question is required")
+        await handle.signal(IncidentResponseWorkflow.request_more_info, question)
+        return {"ok": True}
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 

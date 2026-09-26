@@ -242,7 +242,7 @@ def _parse_llm_json(raw: str) -> dict[str, Any]:
 
 
 def _analyze_with_openai(alert_summary: str, spans: list[dict]) -> dict[str, Any]:
-    """Call the OpenAI chat completions API for root-cause analysis."""
+    """Call the OpenAI chat completions API for root-cause analysis (streaming)."""
     try:
         import openai  # noqa: PLC0415
     except ImportError as exc:
@@ -252,8 +252,9 @@ def _analyze_with_openai(alert_summary: str, spans: list[dict]) -> dict[str, Any
         ) from exc
 
     client = openai.OpenAI(api_key=OPENAI_API_KEY)
-    logger.info("analyze_root_cause: using OpenAI backend")
-    response = client.chat.completions.create(
+    logger.info("analyze_root_cause: using OpenAI backend (streaming)")
+    chunks: list[str] = []
+    with client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
@@ -261,8 +262,13 @@ def _analyze_with_openai(alert_summary: str, spans: list[dict]) -> dict[str, Any
         ],
         temperature=0.0,
         max_tokens=512,
-    )
-    raw = response.choices[0].message.content or ""
+        stream=True,
+    ) as stream:
+        for chunk in stream:
+            delta = chunk.choices[0].delta.content if chunk.choices else None
+            if delta:
+                chunks.append(delta)
+    raw = "".join(chunks)
     return _parse_llm_json(raw)
 
 

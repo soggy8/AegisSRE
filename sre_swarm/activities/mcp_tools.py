@@ -17,6 +17,7 @@ These are Activities (not Workflows) because:
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from typing import Any
@@ -67,13 +68,19 @@ async def call_mcp_tool(request: MCPToolRequest) -> MCPToolResult:
     Non-retryable errors (e.g. 400 Bad Request — unknown tool or bad arguments)
     raise ApplicationError(non_retryable=True) so Temporal does not waste
     retry budget on a logically invalid request.
+
+    For analyze_root_cause the MCP server streams the LLM response token-by-token.
+    We consume the stream with periodic heartbeats so Temporal does not cancel the
+    activity for inactivity while tokens are still arriving.
     """
+    import asyncio  # noqa: PLC0415
     from temporalio.exceptions import ApplicationError  # noqa: PLC0415
 
     activity.logger.info("Calling MCP tool: %s", request.tool_name)
 
     async with httpx.AsyncClient() as client:
-        response = await client.post(
+        async with client.stream(
+            "POST",
             f"{MCP_SERVER_URL}/mcp",
             headers={
                 "Mcp-Protocol-Version": MCP_PROTOCOL,
@@ -85,16 +92,29 @@ async def call_mcp_tool(request: MCPToolRequest) -> MCPToolResult:
                 "tool": request.tool_name,
                 "arguments": request.arguments,
             },
-            timeout=25.0,
-        )
+            timeout=httpx.Timeout(connect=10.0, read=90.0, write=10.0, pool=5.0),
+        ) as response:
+            if response.status_code in (400, 401, 404):
+                # Client-side error — retrying will not help; read body for detail
+                text = await response.aread()
+                raise ApplicationError(
+                    f"MCP server rejected the request [{response.status_code}]: {text.decode()}",
+                    non_retryable=True,
+                )
 
-        if response.status_code in (400, 401, 404):
-            # Client-side error — retrying will not help
-            raise ApplicationError(
-                f"MCP server rejected the request [{response.status_code}]: {response.text}",
-                non_retryable=True,
-            )
+            response.raise_for_status()
 
-        response.raise_for_status()
-        body = response.json()
+            # Consume the response body, heartbeating every ~5 s so Temporal
+            # knows this activity is still making progress (important for
+            # streaming LLM calls that may take tens of seconds).
+            chunks: list[bytes] = []
+            last_heartbeat = asyncio.get_event_loop().time()
+            async for chunk in response.aiter_bytes():
+                chunks.append(chunk)
+                now = asyncio.get_event_loop().time()
+                if now - last_heartbeat >= 5.0:
+                    activity.heartbeat()
+                    last_heartbeat = now
+
+        body = json.loads(b"".join(chunks))
         return MCPToolResult(tool_name=request.tool_name, output=body)

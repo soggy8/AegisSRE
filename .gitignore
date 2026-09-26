@@ -18,3 +18,5 @@ env/
 .DS_Store
 Thumbs.db
 mock_services.db
+
+.env

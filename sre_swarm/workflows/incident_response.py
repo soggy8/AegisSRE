@@ -88,6 +88,7 @@ class IncidentResponseWorkflow:
 
     def __init__(self) -> None:
         self._state = IncidentState()
+        self._input: Optional[IncidentInput] = None
 
     # ------------------------------------------------------------------
     # Signals — called externally (e.g. from an ops dashboard or Slack bot)
@@ -118,6 +119,7 @@ class IncidentResponseWorkflow:
     def get_status(self) -> dict:
         return {
             "status": self._state.status,
+            "affected_service": self._input.affected_service if self._input else None,
             "root_cause": self._state.root_cause,
             "rollback_approved": self._state.rollback_approved,
             "resolution_notes": self._state.resolution_notes,
@@ -134,6 +136,7 @@ class IncidentResponseWorkflow:
 
     @workflow.run
     async def run(self, incident: IncidentInput) -> str:
+        self._input = incident
         workflow.logger.info(
             "Incident response started",
             extra={"incident_id": incident.incident_id, "service": incident.affected_service},
@@ -168,7 +171,8 @@ class IncidentResponseWorkflow:
                     "telemetry_context": telemetry_result.output,
                 },
             ),
-            start_to_close_timeout=timedelta(seconds=60),
+            start_to_close_timeout=timedelta(seconds=120),
+            heartbeat_timeout=timedelta(seconds=15),
             retry_policy=retry,
         )
         self._state.root_cause = rca_result.output.get("root_cause", "unknown")
@@ -226,7 +230,8 @@ class IncidentResponseWorkflow:
                         "extra_context": self._state.extra_context,
                     },
                 ),
-                start_to_close_timeout=timedelta(seconds=60),
+                start_to_close_timeout=timedelta(seconds=120),
+                heartbeat_timeout=timedelta(seconds=15),
                 retry_policy=retry,
             )
             self._state.root_cause = rca_result.output.get("root_cause", "unknown")

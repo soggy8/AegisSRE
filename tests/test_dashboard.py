@@ -173,7 +173,7 @@ class TestParseAlertmanager:
 def test_dashboard_page_surfaces_verification_fields() -> None:
     """The live page template renders confidence, step results, and verification."""
     client = TestClient(app)
-    html = client.get("/").text
+    html = client.get("/dashboard").text
     assert html.startswith("<!DOCTYPE html>")
     assert "compensation_results" in html
     assert "auto_approved" in html

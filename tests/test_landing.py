@@ -14,7 +14,8 @@ def test_landing_page_at_root() -> None:
     response = client.get("/")
     assert response.status_code == 200
     assert "AegisSRE" in response.text
-    assert "Autonomous incident response" in response.text
+    assert "already drafted" in response.text
+    assert 'href="/dashboard"' in response.text
 
 
 def test_dashboard_at_dashboard_path() -> None:

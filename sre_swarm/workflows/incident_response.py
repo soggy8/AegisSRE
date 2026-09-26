@@ -179,10 +179,15 @@ class IncidentResponseWorkflow:
         # Step 3 — Wait for human approval (or timeout after 30 minutes)
         # -----------------------------------------------------------------
         self._state.status = IncidentStatus.REMEDIATING
-        await workflow.wait_condition(
-            lambda: self._state.rollback_approved or self._state.status == IncidentStatus.FAILED,
-            timeout=timedelta(minutes=30),
-        )
+        try:
+            await workflow.wait_condition(
+                lambda: self._state.rollback_approved or self._state.status == IncidentStatus.FAILED,
+                timeout=timedelta(minutes=30),
+            )
+        except asyncio.TimeoutError:
+            self._state.status = IncidentStatus.FAILED
+            self._state.resolution_notes = "Timed out waiting for operator approval (30 min)."
+            return self._state.resolution_notes
 
         if self._state.status == IncidentStatus.FAILED:
             return self._state.resolution_notes

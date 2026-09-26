@@ -6,13 +6,18 @@ Usage:
 """
 
 import asyncio
+import os
 import uuid
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from temporalio.client import Client
 
 from sre_swarm.workflows.incident_response import IncidentInput, IncidentResponseWorkflow
 
-TEMPORAL_HOST = "localhost:7233"
+TEMPORAL_HOST = os.getenv("TEMPORAL_HOST", "localhost:7233")
 TASK_QUEUE    = "sre-swarm"
 
 

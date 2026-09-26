@@ -138,9 +138,8 @@ inside a Workflow.
 ### Area A — MCP Server  `sre_swarm/mcp/`  ❌ NOT STARTED
 
 **Status:** The `sre_swarm/mcp/` package exists but `server.py` has not been created.
-This is the **only remaining blocker** for a live end-to-end run. Everything else in the
-system is complete and tested. The stub in `mcp_tools.py` keeps the workflow functional
-in the meantime.
+This is the **primary blocker** for a live end-to-end run. The stub in `mcp_tools.py`
+keeps the workflow runnable against Temporal in the meantime.
 
 **What to build:**
 
@@ -173,7 +172,7 @@ in the meantime.
       (lines 79–96) and delete the stub_outputs dict once the server responds correctly
 ```
 
-**Key file to read first:** [`sre_swarm/activities/mcp_tools.py`](sre_swarm/activities/mcp_tools.py) — the commented-out block starting at line 79 is the exact request shape the server must accept. [`sre_swarm/telemetry/TELEMETRY.md`](sre_swarm/telemetry/TELEMETRY.md) has the full integration guide for wiring `get_spans()` into the handler.
+**Key file to read first:** [`sre_swarm/activities/mcp_tools.py`](sre_swarm/activities/mcp_tools.py) — the commented-out block at line 79 is the exact request shape the server must accept. [`sre_swarm/telemetry/TELEMETRY.md`](sre_swarm/telemetry/TELEMETRY.md) has the full integration guide for wiring `get_spans()` into the handler.
 
 ---
 
@@ -202,28 +201,67 @@ in the meantime.
 
 ---
 
-### Area D — Workflow Enhancements  `sre_swarm/workflows/`
+### Area D — Workflow & Infrastructure Gaps  ⚠️ BUGS + MISSING PIECES
 
-**Status:** Base workflow is complete and fully functional. The following are *enhancements* for a more production-ready system.
+**Status:** The base workflow logic is correct but there are real bugs and missing
+wiring that must be fixed before any live run works reliably.
+
+#### Bug: unhandled `asyncio.TimeoutError` on approval timeout
+
+`workflow.wait_condition(..., timeout=timedelta(minutes=30))` raises
+`asyncio.TimeoutError` if neither `approve_rollback` nor `reject_rollback` fires
+within 30 minutes. There is no `try/except` around it, so the workflow will **crash**
+instead of escalating gracefully.
 
 ```
-[ ] Add a new Signal: request_more_info(question: str)
-      - Allows the operator to ask the agent a follow-up question mid-incident
-      - The workflow should re-run analyze_root_cause with the additional context
+[x] FIXED — wrapped wait_condition in try/except asyncio.TimeoutError in
+    sre_swarm/workflows/incident_response.py. On timeout the workflow now
+    sets status=FAILED and returns a resolution note instead of crashing.
+```
 
-[ ] Add workflow timeout guard
-      - If the entire incident is not resolved within 2 hours, auto-escalate
-      - Use workflow.execute_activity to call a notify_escalation Activity
+#### ~~Bug: stale TODO comment in `saga.py`~~  ✅ FIXED
 
-[ ] Create sre_swarm/activities/notifications.py
-      - Activity: notify_escalation(incident_id, root_cause, elapsed_minutes)
-      - Stub: just log; TODO: wire to Slack / PagerDuty
-      - Register it in worker.py alongside the existing activities
+```
+[x] FIXED — removed the misleading TODO from execute_compensating_transaction docstring.
+    The real HTTP call to mock services was already present.
+```
 
-[ ] Write a test for the workflow using Temporal's test environment
-      - File: tests/test_incident_response.py
+#### ~~Missing: `load_dotenv()` in worker and trigger script~~  ✅ FIXED
+
+```
+[x] FIXED — load_dotenv() added to sre_swarm/worker.py and
+    sre_swarm/scripts/trigger_incident.py before any sre_swarm.* imports.
+```
+
+#### ~~Missing: `TEMPORAL_HOST` should be read from env~~  ✅ FIXED
+
+```
+[x] FIXED — both worker.py and trigger_incident.py now read:
+      TEMPORAL_HOST = os.getenv("TEMPORAL_HOST", "localhost:7233")
+```
+
+#### Missing: tests
+
+No `tests/` directory exists at all.
+
+```
+[ ] Create tests/test_incident_response.py
       - Use temporalio.testing.WorkflowEnvironment to run deterministic tests
-      - Test the happy path, the rejection path, and the approval-timeout path
+      - Test: happy path (no compensations needed → RESOLVED immediately)
+      - Test: approval path (compensations present → wait → approve → RESOLVED)
+      - Test: rejection path (reject_rollback signal → FAILED with reason)
+      - Test: timeout path (no signal within timeout → FAILED, not crash)
+
+[ ] Create tests/test_mock_services.py  (optional — logic already manually verified)
+[ ] Create tests/test_telemetry_pipeline.py  (optional — logic already manually verified)
+```
+
+#### Enhancement: `request_more_info` signal
+
+```
+[ ] Add Signal: request_more_info(question: str)
+      - Re-runs analyze_root_cause with the additional context appended
+      - The workflow should store the question and re-enter ANALYZING state
 ```
 
 ---

@@ -10,15 +10,20 @@ Run with:
 
 import asyncio
 import logging
+import os
 
-from temporalio.client import Client
-from temporalio.worker import Worker
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from sre_swarm.workflows.incident_response import IncidentResponseWorkflow
 from sre_swarm.activities.mcp_tools import call_mcp_tool
 from sre_swarm.activities.saga import execute_compensating_transaction
 
-TEMPORAL_HOST  = "localhost:7233"
+from temporalio.client import Client
+from temporalio.worker import Worker
+
+TEMPORAL_HOST  = os.getenv("TEMPORAL_HOST", "localhost:7233")
 TASK_QUEUE     = "sre-swarm"
 
 logging.basicConfig(level=logging.INFO)

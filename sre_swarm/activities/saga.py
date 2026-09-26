@@ -49,8 +49,8 @@ async def execute_compensating_transaction(request: CompensationRequest) -> dict
     Temporal retries this Activity on transient failures, making each
     compensation step independently reliable.
 
-    TODO: Wire up to real microservice endpoints once mock services are built
-          (sre_swarm/mock_services/).
+    Retries on 5xx responses (non_retryable=False). Returns immediately on 409
+    (already compensated) so duplicate fan-out calls are idempotent.
     """
     activity.logger.info(
         "Executing compensating transaction: %s %s", request.method, request.endpoint

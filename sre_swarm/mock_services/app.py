@@ -28,7 +28,7 @@ import random
 from typing import Any
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel
 import uvicorn
 
@@ -79,7 +79,7 @@ class RefundPaymentRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @app.post("/placeOrder", status_code=201)
-def place_order(req: PlaceOrderRequest) -> dict:
+def place_order(req: PlaceOrderRequest, response: Response) -> dict:
     """
     Create a new order with status 'pending'.
 
@@ -93,6 +93,7 @@ def place_order(req: PlaceOrderRequest) -> dict:
     """
     if req.order_id in orders:
         logger.info("placeOrder: duplicate order_id=%s, returning existing record", req.order_id)
+        response.status_code = 200
         return orders[req.order_id]
 
     order: dict[str, Any] = {
@@ -149,7 +150,7 @@ def get_order(order_id: str) -> dict:
 # ---------------------------------------------------------------------------
 
 @app.post("/chargePayment", status_code=201)
-def charge_payment(req: ChargePaymentRequest) -> dict:
+def charge_payment(req: ChargePaymentRequest, response: Response) -> dict:
     """
     Record a payment charge with status 'charged'.
 
@@ -158,6 +159,7 @@ def charge_payment(req: ChargePaymentRequest) -> dict:
     """
     if req.payment_id in payments:
         logger.info("chargePayment: duplicate payment_id=%s, returning existing record", req.payment_id)
+        response.status_code = 200
         return payments[req.payment_id]
 
     payment: dict[str, Any] = {

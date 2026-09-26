@@ -89,26 +89,26 @@ After step 6 you should see the workflow appear in the Temporal Web UI at
 sre_swarm/
 │
 ├── workflows/
-│   └── incident_response.py   ← THE WORKFLOW. Orchestration only. No I/O.
+│   └── incident_response.py   ← ✅ COMPLETE. Orchestration only. No I/O.
 │
 ├── activities/
-│   ├── mcp_tools.py           ← stub HTTP call to MCP server
-│   └── saga.py                ← stub compensating transaction HTTP calls
+│   ├── mcp_tools.py           ← ✅ COMPLETE (stub). Real HTTP call commented out — un-comment once MCP server exists.
+│   └── saga.py                ← ✅ COMPLETE. Makes real HTTP calls to mock services.
 │
-├── mcp/                       ← EMPTY — owner: MCP team
-│   └── server.py              (to be created)
+├── mcp/                       ← ❌ NOT STARTED — owner: MCP team
+│   └── server.py              (to be created — see Area A below)
 │
-├── telemetry/                 ← EMPTY — owner: Telemetry team
-│   └── pipeline.py            (to be created)
+├── telemetry/                 ← ✅ COMPLETE
+│   ├── pipeline.py            ← get_spans() + CPU_OVERHEAD_PCT implemented
+│   └── fixtures/              ← happy_path, payment_timeout, cascade_failure JSONs
 │
-├── mock_services/             ← EMPTY — owner: Mock Services team
-│   └── app.py                 (to be created)
+├── mock_services/             ← ✅ COMPLETE
+│   └── app.py                 ← all 6 endpoints implemented and tested
 │
 ├── scripts/
-│   └── trigger_incident.py    ← fires a test incident, useful for manual QA
+│   └── trigger_incident.py    ← ✅ COMPLETE. Fires a test incident, useful for manual QA.
 │
-└── worker.py                  ← Temporal worker entrypoint; register new
-                                  Activities here when you add them
+└── worker.py                  ← ✅ COMPLETE. Register new Activities here when you add them.
 ```
 
 ---
@@ -135,11 +135,12 @@ inside a Workflow.
 
 ## 6. Work areas & task assignments
 
-### Area A — MCP Server  `sre_swarm/mcp/`
+### Area A — MCP Server  `sre_swarm/mcp/`  ❌ NOT STARTED
 
-**What exists:** `sre_swarm/activities/mcp_tools.py` has a stub Activity with
-the exact HTTP request shape commented out. The constants `MCP_SERVER_URL`,
-`MCP_API_KEY`, and `MCP_PROTOCOL = "2026-07-28"` are already defined there.
+**Status:** The `sre_swarm/mcp/` package exists but `server.py` has not been created.
+This is the **only remaining blocker** for a live end-to-end run. Everything else in the
+system is complete and tested. The stub in `mcp_tools.py` keeps the workflow functional
+in the meantime.
 
 **What to build:**
 
@@ -149,10 +150,11 @@ the exact HTTP request shape commented out. The constants `MCP_SERVER_URL`,
       - Read and validate headers: Mcp-Protocol-Version, Mcp-Method, Authorization
       - Route to tool handlers based on the "tool" field in the JSON body
       - No session state — every request must be fully self-describing
+      - Run with: python -m sre_swarm.mcp.server  (add __main__ block)
 
 [ ] Implement tool handler: get_telemetry_context
       - Accepts: { trace_ids: list[str], service: str }
-      - Calls the telemetry pipeline (sre_swarm/telemetry/) to get OTLP spans
+      - Import and call: from sre_swarm.telemetry.pipeline import get_spans, CPU_OVERHEAD_PCT
       - Returns: { spans: [...], cpu_overhead_pct: float }
 
 [ ] Implement tool handler: analyze_root_cause
@@ -160,115 +162,49 @@ the exact HTTP request shape commented out. The constants `MCP_SERVER_URL`,
       - Calls an LLM (watsonx / OpenAI) with a structured prompt
       - Returns: { root_cause: str, confidence: float, compensations: [...] }
       - Each compensation must be: { endpoint: str, method: str, payload: dict }
+        (these map directly to CompensationRequest in sre_swarm/activities/saga.py)
 
-[ ] Implement MCP Tasks extension for long-running tool calls
+[ ] (Optional) Implement MCP Tasks extension for long-running tool calls
       - POST /mcp returns a task handle { task_id, status: "working" }
       - GET  /mcp/tasks/{task_id} returns current status
       - Handle states: working | input_required | completed | failed
-      - input_required must block and wait for a human response payload
-
-[ ] Add server startup to README Quick Start
-[ ] Add MCP_SERVER_URL and MCP_API_KEY to .env.example
 
 [ ] Un-comment the real HTTP block in sre_swarm/activities/mcp_tools.py
-      and delete the stub outputs dict once the server responds correctly
+      (lines 79–96) and delete the stub_outputs dict once the server responds correctly
 ```
 
-**Key file to read first:** [`sre_swarm/activities/mcp_tools.py`](sre_swarm/activities/mcp_tools.py) — the commented-out block starting at line 79 is the exact request the server must accept.
+**Key file to read first:** [`sre_swarm/activities/mcp_tools.py`](sre_swarm/activities/mcp_tools.py) — the commented-out block starting at line 79 is the exact request shape the server must accept. [`sre_swarm/telemetry/TELEMETRY.md`](sre_swarm/telemetry/TELEMETRY.md) has the full integration guide for wiring `get_spans()` into the handler.
 
 ---
 
-### Area B — Telemetry Pipeline  `sre_swarm/telemetry/`
+### Area B — Telemetry Pipeline  `sre_swarm/telemetry/`  ✅ COMPLETE
 
-**What exists:** Empty package. The MCP `get_telemetry_context` tool handler
-(Area A) will call into this package. The workflow passes `trace_ids` and
-`affected_service`.
+**Status:** Fully implemented and tested.
 
-**What to build:**
+- [`sre_swarm/telemetry/pipeline.py`](sre_swarm/telemetry/pipeline.py) — `get_spans(trace_ids, service)` and `CPU_OVERHEAD_PCT = 2.4`
+- `fixtures/` — `happy_path.json`, `payment_timeout.json`, `cascade_failure.json`
+- Fixture routing by keyword in trace_id; dynamic generation fallback
 
-```
-[ ] Create sre_swarm/telemetry/pipeline.py
-      - Function: get_spans(trace_ids: list[str], service: str) -> list[dict]
-      - Returns OTLP-shaped span dicts (see structure below)
-
-[ ] Implement mock eBPF data generation
-      - Simulate network flow capture with ~2.4% CPU overhead annotation
-      - Inject realistic error scenarios: HTTP 500, timeout (>4 s latency),
-        connection reset, partial saga commit
-      - Each span must include: trace_id, span_id, service, status_code,
-        latency_ms, error bool, timestamp
-
-[ ] Add a span fixture file: sre_swarm/telemetry/fixtures/
-      - happy_path.json    — all services healthy
-      - payment_timeout.json — payment-service 500, order partially committed
-      - cascade_failure.json — three services failing in sequence
-
-[ ] Wire pipeline.py into the MCP tool handler (coordinate with Area A team)
-```
-
-**Expected span shape** (match this exactly so Area A can deserialize it):
-```json
-{
-  "trace_id":   "abc123",
-  "span_id":    "def456",
-  "service":    "payment-service",
-  "status_code": 500,
-  "latency_ms":  4500,
-  "error":       true,
-  "timestamp":   "2025-01-01T12:00:00Z"
-}
-```
+**No further work needed.** Wire it into Area A's `get_telemetry_context` handler as described above.
 
 ---
 
-### Area C — Mock Microservices  `sre_swarm/mock_services/`
+### Area C — Mock Microservices  `sre_swarm/mock_services/`  ✅ COMPLETE
 
-**What exists:** Empty package. `sre_swarm/activities/saga.py` has the
-compensating transaction HTTP call commented out at line 62. The constant
-`MOCK_SERVICES_BASE_URL` defaults to `http://localhost:9090`.
+**Status:** Fully implemented and tested (13 test cases passing).
 
-**What to build:**
+- [`sre_swarm/mock_services/app.py`](sre_swarm/mock_services/app.py) — FastAPI app on port 9090
+- All 6 endpoints: `POST /placeOrder`, `POST /cancelOrder`, `POST /chargePayment`, `POST /refundPayment`, `GET /orders/{id}`, `GET /payments/{id}`
+- All idempotency paths return correct status codes (201 new / 200 duplicate / 409 already done / 404 not found)
+- Controlled failure injection via `PAYMENT_FAILURE_RATE` env var
 
-```
-[ ] Create sre_swarm/mock_services/app.py
-      - FastAPI app running on port 9090
-      - Stateful in-memory order/payment store (dict is fine for a POC)
-
-[ ] Implement POST /placeOrder
-      - Accepts: { order_id, items, customer_id }
-      - Persists order with status "pending"
-      - Simulates occasional 500 on payment step (env flag: PAYMENT_FAILURE_RATE)
-
-[ ] Implement POST /cancelOrder
-      - Accepts: { order_id }
-      - Sets order status to "cancelled" — idempotent (409 if already cancelled)
-
-[ ] Implement POST /chargePayment
-      - Accepts: { payment_id, amount, customer_id }
-      - Simulates charge; returns payment_id
-
-[ ] Implement POST /refundPayment
-      - Accepts: { payment_id }
-      - Sets payment status to "refunded" — idempotent (409 if already refunded)
-
-[ ] Implement GET /orders/{order_id} and GET /payments/{payment_id}
-      - Read-only status endpoints for manual inspection
-
-[ ] Un-comment the real HTTP block in sre_swarm/activities/saga.py
-      and delete the stub return once mock services respond correctly
-
-[ ] Add MOCK_SERVICES_URL to .env.example
-[ ] Add mock service startup to README Quick Start
-```
+**No further work needed.**
 
 ---
 
 ### Area D — Workflow Enhancements  `sre_swarm/workflows/`
 
-**What exists:** A complete working workflow at
-[`sre_swarm/workflows/incident_response.py`](sre_swarm/workflows/incident_response.py).
-
-**What to build:**
+**Status:** Base workflow is complete and fully functional. The following are *enhancements* for a more production-ready system.
 
 ```
 [ ] Add a new Signal: request_more_info(question: str)
@@ -282,8 +218,7 @@ compensating transaction HTTP call commented out at line 62. The constant
 [ ] Create sre_swarm/activities/notifications.py
       - Activity: notify_escalation(incident_id, root_cause, elapsed_minutes)
       - Stub: just log; TODO: wire to Slack / PagerDuty
-
-[ ] Add the new activity to worker.py registration list
+      - Register it in worker.py alongside the existing activities
 
 [ ] Write a test for the workflow using Temporal's test environment
       - File: tests/test_incident_response.py

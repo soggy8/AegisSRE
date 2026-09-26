@@ -22,7 +22,7 @@ from datetime import timedelta
 import pytest
 import pytest_asyncio
 from temporalio import activity
-from temporalio.client import WorkflowFailureError
+from temporalio.exceptions import ApplicationError
 from temporalio.testing import WorkflowEnvironment
 from temporalio.worker import Worker
 
@@ -90,6 +90,53 @@ async def _mock_call_mcp_tool_two_compensations(request: MCPToolRequest) -> MCPT
             "confidence": 0.91,
             "compensations": [
                 {"endpoint": "/cancelOrder",   "method": "POST", "payload": {"order_id": "ord-789"}},
+                {"endpoint": "/refundPayment", "method": "POST", "payload": {"payment_id": "pay-456"}},
+            ],
+        },
+    )
+
+
+@activity.defn(name="verify_service_state")
+async def _mock_verify_healthy(request) -> dict:
+    """Reports every compensated resource as matching the plan."""
+    return {
+        "healthy": True,
+        "findings": ["order ord-789 is cancelled", "payment pay-456 is refunded"],
+    }
+
+
+@activity.defn(name="verify_service_state")
+async def _mock_verify_unhealthy(request) -> dict:
+    """Order is still open after the compensation calls returned."""
+    return {
+        "healthy": False,
+        "findings": ["order ord-789 is payment_failed, expected cancelled"],
+    }
+
+
+@activity.defn(name="execute_compensating_transaction")
+async def _mock_comp_refund_fails(request: CompensationRequest) -> dict:
+    """Cancel succeeds; refund fails so the workflow must record a partial result."""
+    if "refund" in request.endpoint.lower():
+        raise ApplicationError("refund gateway timeout", non_retryable=True)
+    return {"status": "ok", "endpoint": request.endpoint}
+
+
+@activity.defn(name="call_mcp_tool")
+async def _mock_call_mcp_tool_high_confidence(request: MCPToolRequest) -> MCPToolResult:
+    """Confidence above the auto-approve threshold, with a real compensation plan."""
+    if request.tool_name == "get_telemetry_context":
+        return MCPToolResult(
+            tool_name="get_telemetry_context",
+            output={"spans": [{"service": "payment-service", "error": False}], "cpu_overhead_pct": 2.4},
+        )
+    return MCPToolResult(
+        tool_name="analyze_root_cause",
+        output={
+            "root_cause": "Payment service timeout caused order saga to partially commit",
+            "confidence": 0.99,
+            "compensations": [
+                {"endpoint": "/cancelOrder", "method": "POST", "payload": {"order_id": "ord-789"}},
                 {"endpoint": "/refundPayment", "method": "POST", "payload": {"payment_id": "pay-456"}},
             ],
         },
@@ -172,6 +219,7 @@ async def test_approval_path() -> None:
             activities=[
                 _mock_call_mcp_tool_two_compensations,
                 _mock_execute_compensating_transaction,
+                _mock_verify_healthy,
             ],
         ):
             handle = await env.client.start_workflow(
@@ -312,6 +360,7 @@ async def test_request_more_info_then_approve() -> None:
             activities=[
                 _mock_call_mcp_tool_tracking,
                 _mock_execute_compensating_transaction,
+                _mock_verify_healthy,
             ],
         ):
             handle = await env.client.start_workflow(
@@ -364,3 +413,179 @@ async def test_request_more_info_then_approve() -> None:
 
     # Final outcome must be RESOLVED.
     assert "Resolved" in result
+
+
+# ---------------------------------------------------------------------------
+# Test 6 — high confidence skips the operator and still verifies
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_auto_approve_high_confidence() -> None:
+    """
+    Confidence >= 0.95 with a compensation plan must run the rollback without
+    a signal, then resolve only after verification reports the services healthy.
+    """
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[IncidentResponseWorkflow],
+            activities=[
+                _mock_call_mcp_tool_high_confidence,
+                _mock_execute_compensating_transaction,
+                _mock_verify_healthy,
+            ],
+        ):
+            handle = await env.client.start_workflow(
+                IncidentResponseWorkflow.run,
+                _BASE_INCIDENT,
+                id="test-auto-approve",
+                task_queue=TASK_QUEUE,
+            )
+            result: str = await handle.result()
+            state: dict = await handle.query(IncidentResponseWorkflow.get_status)
+
+    assert "Auto-approved" in result
+    assert "Resolved" in result
+    assert state["auto_approved"] is True
+    assert state["status"] == IncidentStatus.RESOLVED
+    assert state["confidence"] == pytest.approx(0.99)
+    assert state["verification"]["healthy"] is True
+    assert all(step["ok"] for step in state["compensation_results"])
+
+
+# ---------------------------------------------------------------------------
+# Test 7 — one compensation step fails; the other result is kept
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_partial_compensation_failure_stays_compensating() -> None:
+    """
+    A failed refund must not discard the successful cancel. The workflow stays
+    in COMPENSATING and records which step failed.
+    """
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[IncidentResponseWorkflow],
+            activities=[
+                _mock_call_mcp_tool_two_compensations,
+                _mock_comp_refund_fails,
+                _mock_verify_healthy,
+            ],
+        ):
+            handle = await env.client.start_workflow(
+                IncidentResponseWorkflow.run,
+                _BASE_INCIDENT,
+                id="test-partial-failure",
+                task_queue=TASK_QUEUE,
+            )
+
+            with env.auto_time_skipping_disabled():
+                for _ in range(20):
+                    state: dict = await handle.query(IncidentResponseWorkflow.get_status)
+                    if state["status"] == IncidentStatus.REMEDIATING:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    pytest.fail(f"Workflow never reached REMEDIATING; last status: {state['status']}")
+
+            await handle.signal(IncidentResponseWorkflow.approve_rollback)
+            result: str = await handle.result()
+            state = await handle.query(IncidentResponseWorkflow.get_status)
+
+    assert "Rollback incomplete" in result
+    assert state["status"] == IncidentStatus.COMPENSATING
+    by_endpoint = {step["endpoint"]: step for step in state["compensation_results"]}
+    assert by_endpoint["/cancelOrder"]["ok"] is True
+    assert by_endpoint["/refundPayment"]["ok"] is False
+    assert "refund gateway timeout" in by_endpoint["/refundPayment"]["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Test 8 — compensations succeed but the order is still open
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_unhealthy_verification_stays_compensating() -> None:
+    """
+    HTTP success is not enough. If the order is still open, the incident stays
+    in COMPENSATING and the finding is visible on the workflow status.
+    """
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[IncidentResponseWorkflow],
+            activities=[
+                _mock_call_mcp_tool_two_compensations,
+                _mock_execute_compensating_transaction,
+                _mock_verify_unhealthy,
+            ],
+        ):
+            handle = await env.client.start_workflow(
+                IncidentResponseWorkflow.run,
+                _BASE_INCIDENT,
+                id="test-unhealthy-verify",
+                task_queue=TASK_QUEUE,
+            )
+
+            with env.auto_time_skipping_disabled():
+                for _ in range(20):
+                    state: dict = await handle.query(IncidentResponseWorkflow.get_status)
+                    if state["status"] == IncidentStatus.REMEDIATING:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    pytest.fail(f"Workflow never reached REMEDIATING; last status: {state['status']}")
+
+            await handle.signal(IncidentResponseWorkflow.approve_rollback)
+            result: str = await handle.result()
+            state = await handle.query(IncidentResponseWorkflow.get_status)
+
+    assert "Rollback incomplete" in result
+    assert "payment_failed" in result
+    assert state["status"] == IncidentStatus.COMPENSATING
+    assert state["verification"]["healthy"] is False
+    assert state["verification"]["steps_ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# Test 9 — MCP root-cause failure surfaces FAILED (not stuck analyzing)
+# ---------------------------------------------------------------------------
+
+@activity.defn(name="call_mcp_tool")
+async def _mock_mcp_rca_fails(request: MCPToolRequest) -> MCPToolResult:
+    if request.tool_name == "get_telemetry_context":
+        return MCPToolResult(
+            tool_name="get_telemetry_context",
+            output={"spans": [], "cpu_overhead_pct": 2.4},
+        )
+    raise ApplicationError("MCP analyze_root_cause unavailable", non_retryable=True)
+
+
+@pytest.mark.asyncio
+async def test_root_cause_activity_failure_marks_failed() -> None:
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[IncidentResponseWorkflow],
+            activities=[
+                _mock_mcp_rca_fails,
+                _mock_execute_compensating_transaction,
+                _mock_verify_healthy,
+            ],
+        ):
+            result: str = await env.client.execute_workflow(
+                IncidentResponseWorkflow.run,
+                _BASE_INCIDENT,
+                id="test-rca-failure",
+                task_queue=TASK_QUEUE,
+            )
+            handle = env.client.get_workflow_handle("test-rca-failure")
+            state: dict = await handle.query(IncidentResponseWorkflow.get_status)
+
+    assert "Root-cause analysis failed" in result
+    assert state["status"] == IncidentStatus.FAILED

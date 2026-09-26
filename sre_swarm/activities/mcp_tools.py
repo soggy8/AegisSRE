@@ -26,7 +26,7 @@ import httpx
 from temporalio import activity
 
 
-MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8080")
+MCP_SERVER_URL = os.getenv("MCP_SERVER_URL", "http://localhost:8081")
 MCP_API_KEY    = os.getenv("MCP_API_KEY", "dev-key")
 MCP_PROTOCOL   = "2026-07-28"
 

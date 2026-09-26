@@ -1,0 +1,10 @@
+.venv
+venv
+.git
+.env
+.bob
+bob_sessions
+__pycache__
+.pytest_cache
+*.db
+**/*.pyc

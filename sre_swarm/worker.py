@@ -19,6 +19,7 @@ load_dotenv()
 from sre_swarm.workflows.incident_response import IncidentResponseWorkflow
 from sre_swarm.activities.mcp_tools import call_mcp_tool
 from sre_swarm.activities.saga import execute_compensating_transaction
+from sre_swarm.activities.verify import verify_service_state
 
 from temporalio.client import Client
 from temporalio.worker import Worker
@@ -35,7 +36,7 @@ async def main() -> None:
         client,
         task_queue=TASK_QUEUE,
         workflows=[IncidentResponseWorkflow],
-        activities=[call_mcp_tool, execute_compensating_transaction],
+        activities=[call_mcp_tool, execute_compensating_transaction, verify_service_state],
     )
     logging.info("Worker started on task queue '%s'. Waiting for workflows…", TASK_QUEUE)
     await worker.run()

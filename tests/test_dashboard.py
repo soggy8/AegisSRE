@@ -12,7 +12,9 @@ from __future__ import annotations
 import pytest
 from unittest.mock import AsyncMock, patch, MagicMock
 
-from sre_swarm.dashboard.app import _parse_pagerduty, _parse_alertmanager
+from fastapi.testclient import TestClient
+
+from sre_swarm.dashboard.app import _parse_pagerduty, _parse_alertmanager, app
 
 
 # ---------------------------------------------------------------------------
@@ -166,3 +168,13 @@ class TestParseAlertmanager:
         result = _parse_alertmanager(payload)
         assert result["affected_service"] == "first-service"
         assert result["alert_summary"] == "first"
+
+
+def test_dashboard_page_surfaces_verification_fields() -> None:
+    """The live page template renders confidence, step results, and verification."""
+    client = TestClient(app)
+    html = client.get("/").text
+    assert html.startswith("<!DOCTYPE html>")
+    assert "compensation_results" in html
+    assert "auto_approved" in html
+    assert "verification" in html

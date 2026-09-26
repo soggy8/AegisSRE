@@ -8,7 +8,8 @@ Features:
   - Trigger a new test incident with one click
   - Approve or reject a pending rollback with one click
   - Request more info from the SRE agent (follow-up question)
-  - Shows root cause, resolution notes, status, and compensation count
+  - Shows root cause, confidence, resolution notes, per-step compensation
+    results, and whether post-rollback verification passed
   - Webhook intake: POST /incident accepts PagerDuty and Alertmanager payloads
 
 Run with:
@@ -134,8 +135,16 @@ _HTML = """<!DOCTYPE html>
   .mono { font-family: "JetBrains Mono", "Fira Code", monospace; font-size: 12px; }
   .muted { color: #64748b; font-size: 12px; }
   .root-cause { max-width: 300px; font-size: 12px; color: #94a3b8; }
-  .resolution { max-width: 300px; font-size: 12px; color: #86efac; font-style: italic; }
+  .resolution { max-width: 320px; font-size: 12px; color: #86efac; font-style: italic; }
   .resolution.failed { color: #fca5a5; }
+  .resolution.warn { color: #fbbf24; }
+  .step-ok { color: #86efac; font-size: 12px; }
+  .step-fail { color: #fca5a5; font-size: 12px; }
+  .auto-tag {
+    display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 4px;
+    background: #14532d; color: #86efac; font-size: 10px; font-weight: 700;
+    letter-spacing: .04em; text-transform: uppercase;
+  }
   #empty { text-align: center; padding: 48px; color: #64748b; }
   #error-banner {
     display: none; background: #450a0a; color: #fca5a5;
@@ -191,27 +200,46 @@ _HTML = """<!DOCTYPE html>
 const rows = {};
 
 function badge(status) {
-  return `<span class="badge badge-${status}">${status}</span>`;
+  return `<span class="badge badge-${status}">${esc(status)}</span>`;
+}
+
+function esc(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (ch) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[ch]));
 }
 
 function renderRow(w) {
-  const rc = w.root_cause
-    ? `<div class="root-cause">${w.root_cause}</div>`
-    : '<span class="muted">—</span>';
+  let rc = '<span class="muted">—</span>';
+  if (w.root_cause) {
+    const pct = (w.confidence == null)
+      ? ''
+      : `<div class="muted">confidence ${Math.round(w.confidence * 100)}%${w.auto_approved ? '<span class="auto-tag">auto</span>' : ''}</div>`;
+    rc = `<div class="root-cause">${esc(w.root_cause)}</div>${pct}`;
+  }
 
-  // Resolution notes: show for resolved and failed states
   let resolution = '<span class="muted">—</span>';
-  if (w.resolution_notes) {
-    const cls = w.status === 'failed' ? 'resolution failed' : 'resolution';
-    resolution = `<div class="${cls}" title="${w.resolution_notes}">${w.resolution_notes.length > 80 ? w.resolution_notes.slice(0,80) + '…' : w.resolution_notes}</div>`;
+  if (w.resolution_notes || (w.verification && w.verification.findings)) {
+    const notes = w.resolution_notes || (w.verification.findings || []).join(' ');
+    const cls = w.status === 'failed'
+      ? 'resolution failed'
+      : (w.status === 'compensating' ? 'resolution warn' : 'resolution');
+    const shown = notes.length > 120 ? notes.slice(0, 120) + '…' : notes;
+    resolution = `<div class="${cls}" title="${esc(notes)}">${esc(shown)}</div>`;
   }
 
   let comps = '<span class="muted">—</span>';
-  if (w.compensation_count != null && w.compensation_count > 0) {
+  if (w.compensation_results && w.compensation_results.length) {
+    comps = w.compensation_results.map((c) => {
+      const cls = c.ok ? 'step-ok' : 'step-fail';
+      const mark = c.ok ? '✓' : '✗';
+      return `<div class="${cls}" title="${esc(c.detail)}">${mark} ${esc(c.method)} ${esc(c.endpoint)}</div>`;
+    }).join('');
+  } else if (w.compensation_count != null && w.compensation_count > 0) {
     const lines = (w.compensations || [])
       .map(c => `${c.method} ${c.endpoint}  ${JSON.stringify(c.payload)}`)
-      .join('&#10;');
-    comps = `<span title="${lines}" style="cursor:default;border-bottom:1px dotted #64748b">`
+      .join('\\n');
+    comps = `<span title="${esc(lines)}" style="cursor:default;border-bottom:1px dotted #64748b">`
           + `${w.compensation_count} step${w.compensation_count !== 1 ? 's' : ''}</span>`;
   } else if (w.compensation_count === 0) {
     comps = '<span class="muted">none</span>';
@@ -359,8 +387,12 @@ async def _workflow_states() -> list[dict]:
                     "root_cause": status_data.get("root_cause"),
                     "rollback_approved": status_data.get("rollback_approved", False),
                     "resolution_notes": status_data.get("resolution_notes", ""),
+                    "confidence": status_data.get("confidence"),
+                    "auto_approved": status_data.get("auto_approved", False),
                     "compensation_count": status_data.get("compensation_count"),
                     "compensations": status_data.get("compensations", []),
+                    "compensation_results": status_data.get("compensation_results", []),
+                    "verification": status_data.get("verification") or {},
                 })
             except Exception as e:
                 logger.debug("Could not query workflow %s: %s", wf_id, e)
@@ -372,7 +404,11 @@ async def _workflow_states() -> list[dict]:
                     "root_cause": None,
                     "rollback_approved": False,
                     "resolution_notes": "",
+                    "confidence": None,
+                    "auto_approved": False,
                     "compensation_count": None,
+                    "compensation_results": [],
+                    "verification": {},
                 })
         return results
     except Exception as e:

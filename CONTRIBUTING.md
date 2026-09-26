@@ -38,10 +38,13 @@ IncidentResponseWorkflow  (Temporal — deterministic loop)
       │
       └─ Activity: execute_compensating_transaction  ×N  (Saga fan-out)
               └─ hits mock microservices → /cancelOrder, /refundPayment …
+      └─ Activity: verify_service_state
+              └─ re-reads orders and payments; resolves only if they match the plan
 ```
 
-Every box after the workflow is a stub today. Your job is to fill one of
-those boxes in. See §6 for which box belongs to which work area.
+High-confidence plans (confidence ≥ 0.95) run that rollback without waiting.
+Lower confidence waits for an operator signal from the dashboard. A follow-up
+question is sent back into `analyze_root_cause` as `extra_context`.
 
 ---
 
@@ -68,18 +71,13 @@ pip install -r requirements.txt
 # 3. Copy env template and fill in values
 cp .env.example .env        # (create this file if it doesn't exist yet — see §7)
 
-# 4. Start Temporal (local dev server)
-docker run --rm -p 7233:7233 temporalio/auto-setup:latest
+# 4. Start everything (Temporal, mock services, MCP, worker, dashboard)
+docker compose up --build
+# Dashboard → http://localhost:7080
+# Temporal UI → http://localhost:8080
 
-# 5. Start the worker (separate terminal)
-python -m sre_swarm.worker
-
-# 6. Fire a test incident (separate terminal)
-python -m sre_swarm.scripts.trigger_incident
+# Or start each process yourself — see §8.
 ```
-
-After step 6 you should see the workflow appear in the Temporal Web UI at
-`http://localhost:8080`.
 
 ---
 
@@ -92,11 +90,17 @@ sre_swarm/
 │   └── incident_response.py   ← ✅ COMPLETE. Orchestration only. No I/O.
 │
 ├── activities/
-│   ├── mcp_tools.py           ← ✅ COMPLETE (stub). Real HTTP call commented out — un-comment once MCP server exists.
-│   └── saga.py                ← ✅ COMPLETE. Makes real HTTP calls to mock services.
+│   ├── mcp_tools.py           ← ✅ COMPLETE. HTTP calls to the MCP server.
+│   ├── saga.py                ← ✅ COMPLETE. HTTP calls to mock services.
+│   └── verify.py              ← ✅ COMPLETE. Re-reads order/payment state after rollback.
 │
-├── mcp/                       ← ❌ NOT STARTED — owner: MCP team
-│   └── server.py              (to be created — see Area A below)
+├── mcp/                       ← ✅ COMPLETE
+│   └── server.py              ← get_telemetry_context + analyze_root_cause
+│                                (OpenAI, watsonx, or heuristic). Follow-up
+│                                questions arrive as arguments.extra_context.
+│
+├── dashboard/                 ← ✅ COMPLETE
+│   └── app.py                 ← live UI, webhook intake, approve/reject/ask
 │
 ├── telemetry/                 ← ✅ COMPLETE
 │   ├── pipeline.py            ← get_spans() + CPU_OVERHEAD_PCT implemented
@@ -135,44 +139,18 @@ inside a Workflow.
 
 ## 6. Work areas & task assignments
 
-### Area A — MCP Server  `sre_swarm/mcp/`  ❌ NOT STARTED
+### Area A — MCP Server  `sre_swarm/mcp/`  ✅ COMPLETE
 
-**Status:** The `sre_swarm/mcp/` package exists but `server.py` has not been created.
-This is the **primary blocker** for a live end-to-end run. The stub in `mcp_tools.py`
-keeps the workflow runnable against Temporal in the meantime.
+**Status:** `server.py` is a stateless FastAPI app on port 8081.
 
-**What to build:**
+- `POST /mcp` validates `Mcp-Protocol-Version`, `Mcp-Method`, and `Authorization`
+- `get_telemetry_context` calls `sre_swarm.telemetry.pipeline.get_spans`
+- `analyze_root_cause` uses OpenAI, then watsonx, then a heuristic fallback
+- Operator follow-up questions are read from `arguments.extra_context` and
+  included in the LLM prompt. The heuristic appends them to `root_cause`.
 
-```
-[ ] Create sre_swarm/mcp/server.py
-      - FastAPI app, single POST route at /mcp
-      - Read and validate headers: Mcp-Protocol-Version, Mcp-Method, Authorization
-      - Route to tool handlers based on the "tool" field in the JSON body
-      - No session state — every request must be fully self-describing
-      - Run with: python -m sre_swarm.mcp.server  (add __main__ block)
-
-[ ] Implement tool handler: get_telemetry_context
-      - Accepts: { trace_ids: list[str], service: str }
-      - Import and call: from sre_swarm.telemetry.pipeline import get_spans, CPU_OVERHEAD_PCT
-      - Returns: { spans: [...], cpu_overhead_pct: float }
-
-[ ] Implement tool handler: analyze_root_cause
-      - Accepts: { alert_summary: str, telemetry_context: dict }
-      - Calls an LLM (watsonx / OpenAI) with a structured prompt
-      - Returns: { root_cause: str, confidence: float, compensations: [...] }
-      - Each compensation must be: { endpoint: str, method: str, payload: dict }
-        (these map directly to CompensationRequest in sre_swarm/activities/saga.py)
-
-[ ] (Optional) Implement MCP Tasks extension for long-running tool calls
-      - POST /mcp returns a task handle { task_id, status: "working" }
-      - GET  /mcp/tasks/{task_id} returns current status
-      - Handle states: working | input_required | completed | failed
-
-[ ] Un-comment the real HTTP block in sre_swarm/activities/mcp_tools.py
-      (lines 79–96) and delete the stub_outputs dict once the server responds correctly
-```
-
-**Key file to read first:** [`sre_swarm/activities/mcp_tools.py`](sre_swarm/activities/mcp_tools.py) — the commented-out block at line 79 is the exact request shape the server must accept. [`sre_swarm/telemetry/TELEMETRY.md`](sre_swarm/telemetry/TELEMETRY.md) has the full integration guide for wiring `get_spans()` into the handler.
+`sre_swarm/activities/mcp_tools.py` performs the real HTTP call. There is no
+stub path left.
 
 ---
 
@@ -184,7 +162,11 @@ keeps the workflow runnable against Temporal in the meantime.
 - `fixtures/` — `happy_path.json`, `payment_timeout.json`, `cascade_failure.json`
 - Fixture routing by keyword in trace_id; dynamic generation fallback
 
-**No further work needed.** Wire it into Area A's `get_telemetry_context` handler as described above.
+**No further work needed.** Wire-up to `get_telemetry_context` is already in
+`sre_swarm/mcp/server.py`. The workflow calls that tool again after compensations
+so the dashboard can show how many error spans remain on the original traces.
+Health of the rollback is decided by order and payment status, not by those
+historical spans.
 
 ---
 
@@ -201,67 +183,30 @@ keeps the workflow runnable against Temporal in the meantime.
 
 ---
 
-### Area D — Workflow & Infrastructure Gaps  ⚠️ BUGS + MISSING PIECES
+### Area D — Workflow behaviour  ✅ COMPLETE
 
-**Status:** The base workflow logic is correct but there are real bugs and missing
-wiring that must be fixed before any live run works reliably.
+The workflow in `sre_swarm/workflows/incident_response.py` does the following:
 
-#### Bug: unhandled `asyncio.TimeoutError` on approval timeout
-
-`workflow.wait_condition(..., timeout=timedelta(minutes=30))` raises
-`asyncio.TimeoutError` if neither `approve_rollback` nor `reject_rollback` fires
-within 30 minutes. There is no `try/except` around it, so the workflow will **crash**
-instead of escalating gracefully.
-
-```
-[x] FIXED — wrapped wait_condition in try/except asyncio.TimeoutError in
-    sre_swarm/workflows/incident_response.py. On timeout the workflow now
-    sets status=FAILED and returns a resolution note instead of crashing.
-```
-
-#### ~~Bug: stale TODO comment in `saga.py`~~  ✅ FIXED
+- Waits up to 30 minutes for an operator when confidence is below **0.95**,
+  and records a FAILED timeout instead of crashing.
+- Auto-approves and runs the plan when confidence is **0.95 or higher**.
+- `request_more_info(question)` re-runs `analyze_root_cause` with that
+  question in `extra_context`.
+- Records every compensation step. One failure does not drop the others.
+  The incident stays in `COMPENSATING` and the dashboard shows which step failed.
+- After the steps, `verify_service_state` reads `/orders/{id}` and
+  `/payments/{id}`. An order that is still open, or a payment that is still
+  charged, keeps the incident in `COMPENSATING`. It is marked `RESOLVED`
+  only when every step succeeded and those resources match the plan.
 
 ```
-[x] FIXED — removed the misleading TODO from execute_compensating_transaction docstring.
-    The real HTTP call to mock services was already present.
-```
-
-#### ~~Missing: `load_dotenv()` in worker and trigger script~~  ✅ FIXED
-
-```
-[x] FIXED — load_dotenv() added to sre_swarm/worker.py and
-    sre_swarm/scripts/trigger_incident.py before any sre_swarm.* imports.
-```
-
-#### ~~Missing: `TEMPORAL_HOST` should be read from env~~  ✅ FIXED
-
-```
-[x] FIXED — both worker.py and trigger_incident.py now read:
-      TEMPORAL_HOST = os.getenv("TEMPORAL_HOST", "localhost:7233")
-```
-
-#### Missing: tests
-
-No `tests/` directory exists at all.
-
-```
-[ ] Create tests/test_incident_response.py
-      - Use temporalio.testing.WorkflowEnvironment to run deterministic tests
-      - Test: happy path (no compensations needed → RESOLVED immediately)
-      - Test: approval path (compensations present → wait → approve → RESOLVED)
-      - Test: rejection path (reject_rollback signal → FAILED with reason)
-      - Test: timeout path (no signal within timeout → FAILED, not crash)
-
-[ ] Create tests/test_mock_services.py  (optional — logic already manually verified)
-[ ] Create tests/test_telemetry_pipeline.py  (optional — logic already manually verified)
-```
-
-#### Enhancement: `request_more_info` signal
-
-```
-[ ] Add Signal: request_more_info(question: str)
-      - Re-runs analyze_root_cause with the additional context appended
-      - The workflow should store the question and re-enter ANALYZING state
+[x] Approval timeout is caught and returned as FAILED.
+[x] request_more_info re-enters analysis with the operator's question.
+[x] Per-step compensation results are stored on the workflow query.
+[x] Post-rollback verification gates RESOLVED.
+[x] tests/test_incident_response.py covers happy, approval, rejection,
+    timeout, follow-up, auto-approve, partial failure, and failed verification.
+[x] tests/test_mcp_server.py, tests/test_dashboard.py, tests/test_verify.py
 ```
 
 ---
@@ -276,7 +221,7 @@ variable list — fill in what your area needs:
 TEMPORAL_HOST=localhost:7233
 
 # MCP Server (Area A)
-MCP_SERVER_URL=http://localhost:8080
+MCP_SERVER_URL=http://localhost:8081
 MCP_API_KEY=dev-key
 
 # LLM (Area A — analyze_root_cause)
@@ -284,6 +229,9 @@ WATSONX_API_KEY=
 WATSONX_PROJECT_ID=
 # or if using OpenAI:
 OPENAI_API_KEY=
+
+# Dashboard
+DASHBOARD_PORT=7080
 
 # Mock Services (Area C)
 MOCK_SERVICES_URL=http://localhost:9090
@@ -300,28 +248,36 @@ load_dotenv()
 
 ## 8. Running the system end-to-end
 
-Each component runs in its own terminal. Start them in this order:
+From the repo root:
+
+```bash
+docker compose up --build
+```
+
+Then open the dashboard at `http://localhost:7080` and click **Trigger incident**.
+Temporal's own UI stays on `http://localhost:8080`.
+
+Plans with confidence below 0.95 wait on the dashboard for Approve, Reject, or
+Ask. Higher confidence runs the rollback immediately. Either way, the incident
+stays in `compensating` until order and payment state match the plan.
+
+To run the processes yourself instead:
 
 ```
 Terminal 1 — Temporal server
-  docker run --rm -p 7233:7233 -p 8080:8080 temporalio/auto-setup:latest
+  docker run --rm -p 7233:7233 -p 8080:8080 temporalio/temporal:latest server start-dev --ip 0.0.0.0 --ui-port 8080
 
-Terminal 2 — Mock microservices  (Area C)
+Terminal 2 — Mock microservices
   python -m sre_swarm.mock_services.app
 
-Terminal 3 — MCP server  (Area A)
+Terminal 3 — MCP server
   python -m sre_swarm.mcp.server
 
 Terminal 4 — Temporal worker
   python -m sre_swarm.worker
 
-Terminal 5 — Fire a test incident
-  python -m sre_swarm.scripts.trigger_incident
-
-Terminal 5 — Approve the rollback plan (copy the workflow ID from Terminal 5 output)
-  temporal workflow signal \
-    --workflow-id <id-from-trigger-output> \
-    --name approve_rollback
+Terminal 5 — Dashboard  → http://localhost:7080
+  python -m sre_swarm.dashboard.app
 ```
 
 ---
@@ -366,4 +322,4 @@ Do not store session context between requests on the MCP server. Every
 The Saga fan-out may execute the same compensation twice if the worker
 crashes mid-execution. Your mock service endpoints must return 409 for
 duplicate compensations, and `execute_compensating_transaction` already
-handles that as a success (see the commented stub in `saga.py`).
+handles that as a success.

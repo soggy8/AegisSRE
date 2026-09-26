@@ -1,0 +1,92 @@
+# One command for the whole demo:
+#   docker compose up --build
+#
+# Dashboard:    http://localhost:7080
+# Temporal UI:  http://localhost:8080
+#
+# OPENAI_API_KEY, WATSONX_API_KEY, and WATSONX_PROJECT_ID are read from the
+# shell or from a gitignored .env file in this directory. Leave them empty
+# to use the heuristic root-cause fallback.
+
+services:
+  temporal:
+    # auto-setup:latest now defaults to Cassandra and exits without CASSANDRA_SEEDS.
+    # The dev server is a single process with an in-memory store.
+    image: temporalio/temporal:latest
+    command: ["server", "start-dev", "--ip", "0.0.0.0", "--port", "7233", "--ui-port", "8080"]
+    ports:
+      - "7233:7233"
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "temporal", "operator", "cluster", "health", "--address", "127.0.0.1:7233"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
+  mock-services:
+    build: .
+    command: python -m sre_swarm.mock_services.app
+    environment:
+      MOCK_SERVICES_PORT: "9090"
+      MOCK_DB_PATH: ":memory:"
+      PAYMENT_FAILURE_RATE: "0.3"
+    ports:
+      - "9090:9090"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:9090/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  mcp:
+    build: .
+    command: python -m sre_swarm.mcp.server
+    environment:
+      MCP_SERVER_PORT: "8081"
+      MCP_API_KEY: ${MCP_API_KEY:-dev-key}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      WATSONX_API_KEY: ${WATSONX_API_KEY:-}
+      WATSONX_PROJECT_ID: ${WATSONX_PROJECT_ID:-}
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8081/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  worker:
+    build: .
+    command: python -m sre_swarm.worker
+    environment:
+      TEMPORAL_HOST: temporal:7233
+      MCP_SERVER_URL: http://mcp:8081
+      MCP_API_KEY: ${MCP_API_KEY:-dev-key}
+      MOCK_SERVICES_URL: http://mock-services:9090
+    depends_on:
+      temporal:
+        condition: service_healthy
+      mcp:
+        condition: service_healthy
+      mock-services:
+        condition: service_healthy
+    restart: on-failure
+
+  dashboard:
+    build: .
+    command: python -m sre_swarm.dashboard.app
+    environment:
+      TEMPORAL_HOST: temporal:7233
+      DASHBOARD_PORT: "7080"
+      MOCK_SERVICES_URL: http://mock-services:9090
+    ports:
+      - "7080:7080"
+    depends_on:
+      temporal:
+        condition: service_healthy
+      mock-services:
+        condition: service_healthy
+      worker:
+        condition: service_started
+    restart: on-failure

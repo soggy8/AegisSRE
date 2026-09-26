@@ -145,6 +145,7 @@ def _handle_analyze_root_cause(arguments: dict[str, Any]) -> dict[str, Any]:
         alert_summary:      str   — one-line human alert text
         telemetry_context:  dict  — full output from get_telemetry_context
                                     (contains "spans" and "cpu_overhead_pct")
+        extra_context:      list  — operator follow-up questions, optional
 
     Returns:
         {
@@ -164,6 +165,7 @@ def _handle_analyze_root_cause(arguments: dict[str, Any]) -> dict[str, Any]:
     """
     alert_summary: str = arguments.get("alert_summary", "")
     telemetry_context: dict[str, Any] = arguments.get("telemetry_context", {})
+    extra_context: list[str] = [str(q) for q in arguments.get("extra_context") or []]
     spans: list[dict] = telemetry_context.get("spans", [])
 
     if not alert_summary:
@@ -173,13 +175,13 @@ def _handle_analyze_root_cause(arguments: dict[str, Any]) -> dict[str, Any]:
         )
 
     if OPENAI_API_KEY:
-        return _analyze_with_openai(alert_summary, spans)
+        return _analyze_with_openai(alert_summary, spans, extra_context)
 
     if WATSONX_API_KEY and WATSONX_PROJECT_ID:
-        return _analyze_with_watsonx(alert_summary, spans)
+        return _analyze_with_watsonx(alert_summary, spans, extra_context)
 
     # Fallback: deterministic heuristic (no LLM required)
-    return _analyze_heuristic(alert_summary, spans)
+    return _analyze_heuristic(alert_summary, spans, extra_context)
 
 
 # ---------------------------------------------------------------------------
@@ -209,15 +211,30 @@ IMPORTANT: Some spans may include "order_id" and/or "payment_id" fields containi
 real IDs. You MUST use those exact values in the compensation payloads — never invent
 IDs. If no span contains these fields, check the alert summary for ID references.
 
+If the operator asked follow-up questions, answer them in the root_cause
+and revise the compensation plan accordingly.
+
 If no compensating transactions are needed, return an empty compensations list.
 """
 
 
-def _build_user_message(alert_summary: str, spans: list[dict]) -> str:
-    return (
+def _build_user_message(
+    alert_summary: str,
+    spans: list[dict],
+    extra_context: list[str] | None = None,
+) -> str:
+    message = (
         f"Alert: {alert_summary}\n\n"
         f"Spans:\n{json.dumps(spans, indent=2)}"
     )
+    if extra_context:
+        questions = "\n".join(f"- {question}" for question in extra_context)
+        message += (
+            "\n\nOperator follow-up questions:\n"
+            f"{questions}\n"
+            "Revise the root cause and compensation plan using these questions."
+        )
+    return message
 
 
 def _parse_llm_json(raw: str) -> dict[str, Any]:
@@ -241,7 +258,11 @@ def _parse_llm_json(raw: str) -> dict[str, Any]:
         )
 
 
-def _analyze_with_openai(alert_summary: str, spans: list[dict]) -> dict[str, Any]:
+def _analyze_with_openai(
+    alert_summary: str,
+    spans: list[dict],
+    extra_context: list[str] | None = None,
+) -> dict[str, Any]:
     """Call the OpenAI chat completions API for root-cause analysis (streaming)."""
     try:
         import openai  # noqa: PLC0415
@@ -258,7 +279,7 @@ def _analyze_with_openai(alert_summary: str, spans: list[dict]) -> dict[str, Any
         model="gpt-4o-mini",
         messages=[
             {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": _build_user_message(alert_summary, spans)},
+            {"role": "user", "content": _build_user_message(alert_summary, spans, extra_context)},
         ],
         temperature=0.0,
         max_tokens=512,
@@ -272,7 +293,11 @@ def _analyze_with_openai(alert_summary: str, spans: list[dict]) -> dict[str, Any
     return _parse_llm_json(raw)
 
 
-def _analyze_with_watsonx(alert_summary: str, spans: list[dict]) -> dict[str, Any]:
+def _analyze_with_watsonx(
+    alert_summary: str,
+    spans: list[dict],
+    extra_context: list[str] | None = None,
+) -> dict[str, Any]:
     """Call watsonx.ai for root-cause analysis."""
     try:
         from ibm_watsonx_ai import APIClient, Credentials  # noqa: PLC0415
@@ -291,20 +316,36 @@ def _analyze_with_watsonx(alert_summary: str, spans: list[dict]) -> dict[str, An
         api_client=client,
         project_id=WATSONX_PROJECT_ID,
     )
-    prompt = f"{_SYSTEM_PROMPT}\n\n{_build_user_message(alert_summary, spans)}"
+    prompt = f"{_SYSTEM_PROMPT}\n\n{_build_user_message(alert_summary, spans, extra_context)}"
     result = model.generate_text(prompt=prompt, params={"max_new_tokens": 512, "temperature": 0.0})
     return _parse_llm_json(result)
 
 
-def _analyze_heuristic(alert_summary: str, spans: list[dict]) -> dict[str, Any]:
+def _compensation_ids_from_spans(spans: list[dict]) -> tuple[str | None, str | None]:
+    """Collect order_id / payment_id annotated on error spans by the telemetry pipeline."""
+    order_id: str | None = None
+    payment_id: str | None = None
+    for span in spans:
+        if not span.get("error"):
+            continue
+        if not order_id and span.get("order_id"):
+            order_id = str(span["order_id"])
+        if not payment_id and span.get("payment_id"):
+            payment_id = str(span["payment_id"])
+    return order_id, payment_id
+
+
+def _analyze_heuristic(
+    alert_summary: str,
+    spans: list[dict],
+    extra_context: list[str] | None = None,
+) -> dict[str, Any]:
     """
     Deterministic fallback when no LLM credentials are configured.
 
-    Inspects the spans for error signals and picks the first erroring span's
-    service as the root cause.  No compensations are emitted because the
-    heuristic has no way to know real order/payment IDs — an LLM must be
-    configured (OPENAI_API_KEY or WATSONX_API_KEY+WATSONX_PROJECT_ID) to
-    produce a meaningful compensation plan.
+    Inspects error spans for the failing service and, when the telemetry
+    pipeline embedded real order/payment IDs, emits a minimal saga plan so
+    demos work without an API key.
     """
     logger.warning(
         "analyze_root_cause: no LLM credentials found — using heuristic fallback. "
@@ -317,20 +358,41 @@ def _analyze_heuristic(alert_summary: str, spans: list[dict]) -> dict[str, Any]:
         root_cause = (
             f"{culprit} returned HTTP {error_spans[0].get('status_code', '?')} "
             f"with {error_spans[0].get('latency_ms', '?')} ms latency — "
-            f"likely caused the saga to partially commit. "
-            f"Configure an LLM to generate a compensation plan with real IDs."
+            f"likely caused the saga to partially commit."
         )
-        confidence = round(min(0.5 + len(error_spans) * 0.08, 0.90), 2)
+        confidence = round(min(0.5 + len(error_spans) * 0.08, 0.88), 2)
     else:
         root_cause = f"No error spans found; alert was: {alert_summary}"
         confidence = 0.30
 
-    # No compensations: the heuristic has no real order/payment IDs to act on.
-    # The workflow will resolve immediately with the root_cause message above.
+    if extra_context:
+        root_cause = f"{root_cause} Follow-up considered: {'; '.join(extra_context)}"
+        confidence = round(max(confidence - 0.05, 0.0), 2)
+
+    order_id, payment_id = _compensation_ids_from_spans(spans)
+    compensations: list[dict[str, Any]] = []
+    if order_id:
+        compensations.append({
+            "endpoint": "/cancelOrder",
+            "method": "POST",
+            "payload": {"order_id": order_id},
+        })
+    if payment_id:
+        compensations.append({
+            "endpoint": "/refundPayment",
+            "method": "POST",
+            "payload": {"payment_id": payment_id},
+        })
+    if error_spans and not compensations:
+        root_cause = (
+            f"{root_cause} No order_id/payment_id on spans — "
+            f"set OPENAI_API_KEY for LLM-generated compensations."
+        )
+
     return {
         "root_cause": root_cause,
         "confidence": confidence,
-        "compensations": [],
+        "compensations": compensations,
     }
 
 

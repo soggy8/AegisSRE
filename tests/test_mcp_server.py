@@ -192,6 +192,13 @@ class TestAnalyzeRootCause:
     no LLM credentials are present. They do not make external network calls.
     """
 
+    @pytest.fixture(autouse=True)
+    def _force_heuristic(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Keep tests off the real LLM even when a local .env has a key."""
+        monkeypatch.setattr("sre_swarm.mcp.server.OPENAI_API_KEY", "")
+        monkeypatch.setattr("sre_swarm.mcp.server.WATSONX_API_KEY", "")
+        monkeypatch.setattr("sre_swarm.mcp.server.WATSONX_PROJECT_ID", "")
+
     _SAMPLE_TELEMETRY = {
         "spans": [
             {
@@ -262,6 +269,47 @@ class TestAnalyzeRootCause:
         }
         body = self._call(client, "Spurious alert", telemetry)
         assert "root_cause" in body
+
+    def test_heuristic_builds_compensations_from_span_ids(self, client: TestClient) -> None:
+        telemetry = {
+            "spans": [
+                {
+                    "trace_id": "t1",
+                    "span_id": "s1",
+                    "service": "payment-service",
+                    "status_code": 504,
+                    "latency_ms": 4700,
+                    "error": True,
+                    "order_id": "ord-heur-1",
+                    "payment_id": "pay-heur-9",
+                    "timestamp": "2025-01-01T12:00:00Z",
+                },
+            ],
+            "cpu_overhead_pct": 2.4,
+        }
+        body = self._call(client, "Checkout timeout", telemetry)
+        assert len(body["compensations"]) == 2
+        endpoints = {c["endpoint"] for c in body["compensations"]}
+        assert "/cancelOrder" in endpoints
+        assert "/refundPayment" in endpoints
+
+    def test_extra_context_is_included_in_root_cause(self, client: TestClient) -> None:
+        response = client.post(
+            "/mcp",
+            headers=_valid_headers(),
+            json={
+                "tool": "analyze_root_cause",
+                "arguments": {
+                    "alert_summary": "Payment 500 spike",
+                    "telemetry_context": self._SAMPLE_TELEMETRY,
+                    "extra_context": ["is the DB involved?"],
+                },
+            },
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert "is the DB involved?" in body["root_cause"]
+        assert "Follow-up considered" in body["root_cause"]
 
     def test_missing_alert_summary_returns_400(self, client: TestClient) -> None:
         response = client.post(

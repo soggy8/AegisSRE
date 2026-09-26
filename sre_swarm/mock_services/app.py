@@ -192,6 +192,12 @@ class RefundPaymentRequest(BaseModel):
 # Order endpoints
 # ---------------------------------------------------------------------------
 
+@app.get("/health")
+def health() -> dict:
+    """Liveness probe used by Docker Compose."""
+    return {"status": "ok"}
+
+
 @app.post("/placeOrder", status_code=201)
 def place_order(req: PlaceOrderRequest, response: Response) -> dict:
     """

@@ -40,6 +40,10 @@ from sre_swarm.workflows.incident_response import (
 
 TASK_QUEUE = "test-sre-swarm"
 
+# Collects analyze_root_cause call arguments for test_request_more_info_then_approve.
+# Reset to [] at the start of that test.
+_rca_calls: list[dict] = []
+
 _BASE_INCIDENT = IncidentInput(
     incident_id="INC-TEST-001",
     affected_service="payment-service",
@@ -96,6 +100,27 @@ async def _mock_call_mcp_tool_two_compensations(request: MCPToolRequest) -> MCPT
 async def _mock_execute_compensating_transaction(request: CompensationRequest) -> dict:
     """Returns a success dict without making any HTTP calls."""
     return {"status": "ok", "endpoint": request.endpoint}
+
+
+@activity.defn(name="call_mcp_tool")
+async def _mock_call_mcp_tool_tracking(request: MCPToolRequest) -> MCPToolResult:
+    """Records every analyze_root_cause invocation into _rca_calls for assertion."""
+    if request.tool_name == "get_telemetry_context":
+        return MCPToolResult(
+            tool_name="get_telemetry_context",
+            output={"spans": [], "cpu_overhead_pct": 2.4},
+        )
+    _rca_calls.append(dict(request.arguments))
+    return MCPToolResult(
+        tool_name="analyze_root_cause",
+        output={
+            "root_cause": "Payment service timeout caused order saga to partially commit",
+            "confidence": 0.91,
+            "compensations": [
+                {"endpoint": "/cancelOrder", "method": "POST", "payload": {"order_id": "ord-789"}},
+            ],
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -260,3 +285,82 @@ async def test_timeout_path() -> None:
 
     assert "Timed out" in result
     assert "30 min" in result
+
+
+# ---------------------------------------------------------------------------
+# Test 5 — request_more_info path (re-analysis with extra context → RESOLVED)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_request_more_info_then_approve() -> None:
+    """
+    Operator sends request_more_info("is the DB involved?") before approving.
+
+    Assertions:
+      1. analyze_root_cause is called a second time.
+      2. The second call's arguments include the question in extra_context.
+      3. Sending approve_rollback after that resolves the workflow as RESOLVED.
+    """
+    global _rca_calls
+    _rca_calls = []  # reset before this test
+
+    async with await WorkflowEnvironment.start_time_skipping() as env:
+        async with Worker(
+            env.client,
+            task_queue=TASK_QUEUE,
+            workflows=[IncidentResponseWorkflow],
+            activities=[
+                _mock_call_mcp_tool_tracking,
+                _mock_execute_compensating_transaction,
+            ],
+        ):
+            handle = await env.client.start_workflow(
+                IncidentResponseWorkflow.run,
+                _BASE_INCIDENT,
+                id="test-more-info-path",
+                task_queue=TASK_QUEUE,
+            )
+
+            # Wait for the first REMEDIATING before sending the question.
+            with env.auto_time_skipping_disabled():
+                for _ in range(20):
+                    state: dict = await handle.query(IncidentResponseWorkflow.get_status)
+                    if state["status"] == IncidentStatus.REMEDIATING:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    pytest.fail(
+                        f"Workflow never reached REMEDIATING; last status: {state['status']}"
+                    )
+
+            # Signal the question — workflow sets status=ANALYZING, wait_condition unblocks,
+            # the while loop fires, re-runs RCA, then sets status back to REMEDIATING.
+            await handle.signal(IncidentResponseWorkflow.request_more_info, "is the DB involved?")
+
+            # Wait for the workflow to re-enter REMEDIATING after the second RCA run.
+            with env.auto_time_skipping_disabled():
+                for _ in range(20):
+                    state = await handle.query(IncidentResponseWorkflow.get_status)
+                    if state["status"] == IncidentStatus.REMEDIATING:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    pytest.fail(
+                        f"Workflow never returned to REMEDIATING after re-analysis; "
+                        f"last status: {state['status']}"
+                    )
+
+            # Now approve — workflow proceeds to COMPENSATING → RESOLVED.
+            await handle.signal(IncidentResponseWorkflow.approve_rollback)
+            result: str = await handle.result()
+
+    # analyze_root_cause must have been called exactly twice (initial + re-run).
+    assert len(_rca_calls) == 2, f"Expected 2 RCA calls, got {len(_rca_calls)}"
+
+    # Second call must carry the question in extra_context.
+    second_call_args = _rca_calls[1]
+    assert "extra_context" in second_call_args
+    assert "is the DB involved?" in second_call_args["extra_context"]
+
+    # Final outcome must be RESOLVED.
+    assert "Resolved" in result

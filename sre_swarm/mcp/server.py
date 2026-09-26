@@ -205,6 +205,10 @@ Available compensation endpoints on the mock microservices at http://localhost:9
   POST /cancelOrder   { "order_id": "<id>" }
   POST /refundPayment { "payment_id": "<id>" }
 
+IMPORTANT: Some spans may include "order_id" and/or "payment_id" fields containing
+real IDs. You MUST use those exact values in the compensation payloads — never invent
+IDs. If no span contains these fields, check the alert summary for ID references.
+
 If no compensating transactions are needed, return an empty compensations list.
 """
 

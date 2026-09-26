@@ -81,6 +81,9 @@ def get_spans(trace_ids: list[str], service: str) -> list[dict[str, Any]]:
          match the requested trace IDs or service.
       2. Otherwise, generate synthetic spans dynamically — one per trace_id,
          with realistic error injection weighted toward the requested service.
+      3. If trace_ids contain "order_id:<id>" or "payment_id:<id>" entries,
+         those real IDs are embedded into the first error span so the LLM
+         can produce a correct compensation plan.
 
     Args:
         trace_ids: List of trace IDs to fetch spans for.
@@ -96,19 +99,46 @@ def get_spans(trace_ids: list[str], service: str) -> list[dict[str, Any]]:
     # --- Try fixture match first -------------------------------------------
     fixture_spans = _try_load_fixture(trace_ids, service)
     if fixture_spans is not None:
+        spans = fixture_spans
         logger.info(
             "Returning %d fixture spans for service=%s traces=%s",
-            len(fixture_spans), service, trace_ids,
+            len(spans), service, trace_ids,
         )
-        return fixture_spans
+    else:
+        # --- Fall back to dynamic generation --------------------------------
+        spans = _generate_spans(trace_ids, service)
+        logger.info(
+            "Generated %d dynamic spans for service=%s traces=%s",
+            len(spans), service, trace_ids,
+        )
 
-    # --- Fall back to dynamic generation -----------------------------------
-    spans = _generate_spans(trace_ids, service)
-    logger.info(
-        "Generated %d dynamic spans for service=%s traces=%s",
-        len(spans), service, trace_ids,
-    )
+    # --- Annotate first error span with real IDs (if provided) -------------
+    real_ids = _extract_ids(trace_ids)
+    if real_ids:
+        for span in spans:
+            if span.get("error"):
+                span.update(real_ids)
+                logger.info("Annotated error span with real IDs: %s", real_ids)
+                break
+
     return spans
+
+
+def _extract_ids(trace_ids: list[str]) -> dict[str, str]:
+    """
+    Extract real order/payment IDs embedded as structured trace_id entries.
+
+    The trigger script passes entries like "order_id:ord-abc123" alongside
+    normal trace IDs so downstream components can surface the real IDs
+    without a separate lookup.
+    """
+    ids: dict[str, str] = {}
+    for t in trace_ids:
+        if t.startswith("order_id:"):
+            ids["order_id"] = t.split(":", 1)[1]
+        elif t.startswith("payment_id:"):
+            ids["payment_id"] = t.split(":", 1)[1]
+    return ids
 
 
 # ---------------------------------------------------------------------------

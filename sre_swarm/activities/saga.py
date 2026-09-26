@@ -67,6 +67,13 @@ async def execute_compensating_transaction(request: CompensationRequest) -> dict
         if response.status_code == 409:
             # Already compensated — idempotent, treat as success.
             return {"status": "already_compensated", "endpoint": request.endpoint}
+        if response.status_code == 404:
+            # Resource doesn't exist — already cleaned up, treat as success.
+            activity.logger.warning(
+                "Compensation target not found (404) at %s — treating as already resolved.",
+                request.endpoint,
+            )
+            return {"status": "not_found", "endpoint": request.endpoint}
         if response.status_code >= 500:
             raise ApplicationError(f"Compensation failed: {response.text}", non_retryable=False)
         response.raise_for_status()

@@ -290,10 +290,11 @@ def _analyze_heuristic(alert_summary: str, spans: list[dict]) -> dict[str, Any]:
     """
     Deterministic fallback when no LLM credentials are configured.
 
-    Inspects the spans for error signals, picks the first erroring span's
-    service as the root cause, and emits standard cancelOrder + refundPayment
-    compensations using placeholder IDs.  This keeps the full workflow
-    runnable in development without any API keys.
+    Inspects the spans for error signals and picks the first erroring span's
+    service as the root cause.  No compensations are emitted because the
+    heuristic has no way to know real order/payment IDs — an LLM must be
+    configured (OPENAI_API_KEY or WATSONX_API_KEY+WATSONX_PROJECT_ID) to
+    produce a meaningful compensation plan.
     """
     logger.warning(
         "analyze_root_cause: no LLM credentials found — using heuristic fallback. "
@@ -306,20 +307,20 @@ def _analyze_heuristic(alert_summary: str, spans: list[dict]) -> dict[str, Any]:
         root_cause = (
             f"{culprit} returned HTTP {error_spans[0].get('status_code', '?')} "
             f"with {error_spans[0].get('latency_ms', '?')} ms latency — "
-            f"likely caused the saga to partially commit."
+            f"likely caused the saga to partially commit. "
+            f"Configure an LLM to generate a compensation plan with real IDs."
         )
         confidence = round(min(0.5 + len(error_spans) * 0.08, 0.90), 2)
     else:
         root_cause = f"No error spans found; alert was: {alert_summary}"
         confidence = 0.30
 
+    # No compensations: the heuristic has no real order/payment IDs to act on.
+    # The workflow will resolve immediately with the root_cause message above.
     return {
         "root_cause": root_cause,
         "confidence": confidence,
-        "compensations": [
-            {"endpoint": "/cancelOrder",   "method": "POST", "payload": {"order_id":   "ord-placeholder"}},
-            {"endpoint": "/refundPayment", "method": "POST", "payload": {"payment_id": "pay-placeholder"}},
-        ],
+        "compensations": [],
     }
 
 

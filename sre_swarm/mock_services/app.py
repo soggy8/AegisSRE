@@ -18,13 +18,17 @@ Run with:
 Environment variables:
     MOCK_SERVICES_PORT    Port to listen on (default: 9090)
     PAYMENT_FAILURE_RATE  Float 0.0–1.0, chance /placeOrder triggers a 500 (default: 0.3)
+    MOCK_DB_PATH          SQLite file path (default: mock_services.db). Use :memory: in tests.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import random
+import sqlite3
+from pathlib import Path
 from typing import Any
 
 from dotenv import load_dotenv
@@ -36,18 +40,111 @@ load_dotenv()
 
 PAYMENT_FAILURE_RATE: float = float(os.getenv("PAYMENT_FAILURE_RATE", "0.3"))
 PORT: int = int(os.getenv("MOCK_SERVICES_PORT", "9090"))
+DB_PATH = Path(os.getenv("MOCK_DB_PATH", "mock_services.db"))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Mock Microservices", version="0.1.0")
 
+
 # ---------------------------------------------------------------------------
-# In-memory stores  (dict is fine for a POC)
+# Database setup
 # ---------------------------------------------------------------------------
 
-orders: dict[str, dict[str, Any]] = {}
-payments: dict[str, dict[str, Any]] = {}
+def _init_db() -> None:
+    con = sqlite3.connect(DB_PATH)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS orders (
+            order_id    TEXT PRIMARY KEY,
+            customer_id TEXT NOT NULL,
+            items       TEXT NOT NULL,
+            status      TEXT NOT NULL
+        )
+    """)
+    con.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            payment_id  TEXT PRIMARY KEY,
+            customer_id TEXT NOT NULL,
+            amount      REAL NOT NULL,
+            status      TEXT NOT NULL
+        )
+    """)
+    con.commit()
+    con.close()
+
+
+_init_db()
+
+
+# ---------------------------------------------------------------------------
+# Order helpers
+# ---------------------------------------------------------------------------
+
+def _get_order(order_id: str) -> dict | None:
+    con = sqlite3.connect(DB_PATH)
+    row = con.execute(
+        "SELECT order_id, customer_id, items, status FROM orders WHERE order_id=?",
+        (order_id,),
+    ).fetchone()
+    con.close()
+    if row is None:
+        return None
+    return {"order_id": row[0], "customer_id": row[1],
+            "items": json.loads(row[2]), "status": row[3]}
+
+
+def _save_order(order: dict) -> None:
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT OR REPLACE INTO orders VALUES (?,?,?,?)",
+        (order["order_id"], order["customer_id"],
+         json.dumps(order["items"]), order["status"]),
+    )
+    con.commit()
+    con.close()
+
+
+def _update_order_status(order_id: str, status: str) -> None:
+    con = sqlite3.connect(DB_PATH)
+    con.execute("UPDATE orders SET status=? WHERE order_id=?", (status, order_id))
+    con.commit()
+    con.close()
+
+
+# ---------------------------------------------------------------------------
+# Payment helpers
+# ---------------------------------------------------------------------------
+
+def _get_payment(payment_id: str) -> dict | None:
+    con = sqlite3.connect(DB_PATH)
+    row = con.execute(
+        "SELECT payment_id, customer_id, amount, status FROM payments WHERE payment_id=?",
+        (payment_id,),
+    ).fetchone()
+    con.close()
+    if row is None:
+        return None
+    return {"payment_id": row[0], "customer_id": row[1],
+            "amount": row[2], "status": row[3]}
+
+
+def _save_payment(payment: dict) -> None:
+    con = sqlite3.connect(DB_PATH)
+    con.execute(
+        "INSERT OR REPLACE INTO payments VALUES (?,?,?,?)",
+        (payment["payment_id"], payment["customer_id"],
+         payment["amount"], payment["status"]),
+    )
+    con.commit()
+    con.close()
+
+
+def _update_payment_status(payment_id: str, status: str) -> None:
+    con = sqlite3.connect(DB_PATH)
+    con.execute("UPDATE payments SET status=? WHERE payment_id=?", (status, payment_id))
+    con.commit()
+    con.close()
 
 
 # ---------------------------------------------------------------------------
@@ -91,10 +188,11 @@ def place_order(req: PlaceOrderRequest, response: Response) -> dict:
     Idempotent: re-posting the same order_id returns the existing record
     with a 200 instead of creating a duplicate.
     """
-    if req.order_id in orders:
+    existing = _get_order(req.order_id)
+    if existing:
         logger.info("placeOrder: duplicate order_id=%s, returning existing record", req.order_id)
         response.status_code = 200
-        return orders[req.order_id]
+        return existing
 
     order: dict[str, Any] = {
         "order_id": req.order_id,
@@ -105,11 +203,11 @@ def place_order(req: PlaceOrderRequest, response: Response) -> dict:
 
     if random.random() < PAYMENT_FAILURE_RATE:
         order["status"] = "payment_failed"
-        orders[req.order_id] = order
+        _save_order(order)
         logger.warning("placeOrder: simulated payment failure for order_id=%s", req.order_id)
         raise HTTPException(status_code=500, detail={"error": "payment_failed", "order": order})
 
-    orders[req.order_id] = order
+    _save_order(order)
     logger.info("placeOrder: created order_id=%s", req.order_id)
     return order
 
@@ -123,7 +221,7 @@ def cancel_order(req: CancelOrderRequest) -> dict:
     activity can treat it as a successful no-op.
     Raises 404 if the order does not exist.
     """
-    order = orders.get(req.order_id)
+    order = _get_order(req.order_id)
     if order is None:
         raise HTTPException(status_code=404, detail=f"order {req.order_id!r} not found")
 
@@ -131,6 +229,7 @@ def cancel_order(req: CancelOrderRequest) -> dict:
         logger.info("cancelOrder: order_id=%s already cancelled", req.order_id)
         raise HTTPException(status_code=409, detail=f"order {req.order_id!r} already cancelled")
 
+    _update_order_status(req.order_id, "cancelled")
     order["status"] = "cancelled"
     logger.info("cancelOrder: cancelled order_id=%s", req.order_id)
     return order
@@ -139,7 +238,7 @@ def cancel_order(req: CancelOrderRequest) -> dict:
 @app.get("/orders/{order_id}")
 def get_order(order_id: str) -> dict:
     """Read-only status endpoint for manual inspection."""
-    order = orders.get(order_id)
+    order = _get_order(order_id)
     if order is None:
         raise HTTPException(status_code=404, detail=f"order {order_id!r} not found")
     return order
@@ -157,10 +256,11 @@ def charge_payment(req: ChargePaymentRequest, response: Response) -> dict:
     Idempotent: re-posting the same payment_id returns the existing record
     with a 200 instead of creating a duplicate charge.
     """
-    if req.payment_id in payments:
+    existing = _get_payment(req.payment_id)
+    if existing:
         logger.info("chargePayment: duplicate payment_id=%s, returning existing record", req.payment_id)
         response.status_code = 200
-        return payments[req.payment_id]
+        return existing
 
     payment: dict[str, Any] = {
         "payment_id": req.payment_id,
@@ -168,7 +268,7 @@ def charge_payment(req: ChargePaymentRequest, response: Response) -> dict:
         "customer_id": req.customer_id,
         "status": "charged",
     }
-    payments[req.payment_id] = payment
+    _save_payment(payment)
     logger.info("chargePayment: charged payment_id=%s amount=%.2f", req.payment_id, req.amount)
     return payment
 
@@ -182,7 +282,7 @@ def refund_payment(req: RefundPaymentRequest) -> dict:
     activity can treat it as a successful no-op.
     Raises 404 if the payment does not exist.
     """
-    payment = payments.get(req.payment_id)
+    payment = _get_payment(req.payment_id)
     if payment is None:
         raise HTTPException(status_code=404, detail=f"payment {req.payment_id!r} not found")
 
@@ -190,6 +290,7 @@ def refund_payment(req: RefundPaymentRequest) -> dict:
         logger.info("refundPayment: payment_id=%s already refunded", req.payment_id)
         raise HTTPException(status_code=409, detail=f"payment {req.payment_id!r} already refunded")
 
+    _update_payment_status(req.payment_id, "refunded")
     payment["status"] = "refunded"
     logger.info("refundPayment: refunded payment_id=%s", req.payment_id)
     return payment
@@ -198,7 +299,7 @@ def refund_payment(req: RefundPaymentRequest) -> dict:
 @app.get("/payments/{payment_id}")
 def get_payment(payment_id: str) -> dict:
     """Read-only status endpoint for manual inspection."""
-    payment = payments.get(payment_id)
+    payment = _get_payment(payment_id)
     if payment is None:
         raise HTTPException(status_code=404, detail=f"payment {payment_id!r} not found")
     return payment

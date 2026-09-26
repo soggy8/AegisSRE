@@ -15,7 +15,6 @@ env/
 .bob/
 
 # Bob sessions / screenshots
-bob_sessions/
 
 # OS
 .DS_Store

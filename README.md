@@ -29,17 +29,26 @@ sre_swarm/
 # 1. Install dependencies
 pip install -r requirements.txt
 
-# 2. Start a local Temporal server (requires Docker)
-docker run --rm -p 7233:7233 temporalio/auto-setup:latest
+# 2. Copy env template and fill in values
+cp .env.example .env
 
-# 3. Start the Temporal worker
-python -m sre_swarm.worker
+# 3. Start a local Temporal server (requires Docker)
+docker run --rm -p 7233:7233 -p 8080:8080 temporalio/auto-setup:latest
 
-# 4. Start the MCP server
+# 4. Start the mock microservices (Terminal 2)
+python -m sre_swarm.mock_services.app
+
+# 5. Start the MCP server (Terminal 3)
 python -m sre_swarm.mcp.server
 
-# 5. Trigger a test incident
+# 6. Start the Temporal worker (Terminal 4)
+python -m sre_swarm.worker
+
+# 7. Trigger a test incident (Terminal 5)
 python -m sre_swarm.scripts.trigger_incident
+
+# 8. Approve the rollback plan — copy the workflow ID printed by step 7
+temporal workflow signal --workflow-id <id> --name approve_rollback
 ```
 
 ## Contributing

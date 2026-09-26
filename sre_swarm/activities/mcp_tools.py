@@ -64,60 +64,37 @@ async def call_mcp_tool(request: MCPToolRequest) -> MCPToolResult:
       Mcp-Method: tools/call
 
     The Activity is retried automatically by Temporal on transient failures.
-    Non-retryable errors (e.g. 400 Bad Request) should raise
-    `temporalio.exceptions.ApplicationError(non_retryable=True)`.
-
-    TODO: Replace the stub body with a real HTTP call once the MCP server
-          (sre_swarm/mcp/server.py) is implemented.
+    Non-retryable errors (e.g. 400 Bad Request — unknown tool or bad arguments)
+    raise ApplicationError(non_retryable=True) so Temporal does not waste
+    retry budget on a logically invalid request.
     """
+    from temporalio.exceptions import ApplicationError  # noqa: PLC0415
+
     activity.logger.info("Calling MCP tool: %s", request.tool_name)
 
-    # --- STUB: simulate calling the MCP server ----------------------------
-    # Replace this block with the real implementation below once the server
-    # is running. The commented-out code shows the correct request shape.
-    #
-    # async with httpx.AsyncClient() as client:
-    #     response = await client.post(
-    #         f"{MCP_SERVER_URL}/mcp",
-    #         headers={
-    #             "Mcp-Protocol-Version": MCP_PROTOCOL,
-    #             "Mcp-Method":           "tools/call",
-    #             "Authorization":        f"Bearer {MCP_API_KEY}",
-    #             "Content-Type":         "application/json",
-    #         },
-    #         json={
-    #             "tool": request.tool_name,
-    #             "arguments": request.arguments,
-    #         },
-    #         timeout=25.0,
-    #     )
-    #     response.raise_for_status()
-    #     body = response.json()
-    #     return MCPToolResult(tool_name=request.tool_name, output=body)
-    # --- END STUB ----------------------------------------------------------
+    async with httpx.AsyncClient() as client:
+        response = await client.post(
+            f"{MCP_SERVER_URL}/mcp",
+            headers={
+                "Mcp-Protocol-Version": MCP_PROTOCOL,
+                "Mcp-Method":           "tools/call",
+                "Authorization":        f"Bearer {MCP_API_KEY}",
+                "Content-Type":         "application/json",
+            },
+            json={
+                "tool": request.tool_name,
+                "arguments": request.arguments,
+            },
+            timeout=25.0,
+        )
 
-    stub_outputs: dict[str, dict] = {
-        "get_telemetry_context": {
-            "spans": [
-                {
-                    "trace_id": request.arguments.get("trace_ids", ["trace-001"])[0],
-                    "service":  request.arguments.get("service", "unknown"),
-                    "error":    True,
-                    "latency_ms": 4500,
-                    "status_code": 500,
-                }
-            ],
-            "cpu_overhead_pct": 2.4,  # simulated eBPF overhead
-        },
-        "analyze_root_cause": {
-            "root_cause": "Payment service timeout caused order saga to partially commit",
-            "confidence": 0.91,
-            "compensations": [
-                {"endpoint": "/cancelOrder",   "method": "POST", "payload": {"order_id": "ord-789"}},
-                {"endpoint": "/refundPayment", "method": "POST", "payload": {"payment_id": "pay-456"}},
-            ],
-        },
-    }
+        if response.status_code in (400, 401, 404):
+            # Client-side error — retrying will not help
+            raise ApplicationError(
+                f"MCP server rejected the request [{response.status_code}]: {response.text}",
+                non_retryable=True,
+            )
 
-    output = stub_outputs.get(request.tool_name, {"message": "tool not found"})
-    return MCPToolResult(tool_name=request.tool_name, output=output)
+        response.raise_for_status()
+        body = response.json()
+        return MCPToolResult(tool_name=request.tool_name, output=body)

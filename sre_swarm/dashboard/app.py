@@ -22,6 +22,8 @@ import os
 import uuid
 from typing import AsyncGenerator
 
+import httpx
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, Response
 from fastapi.responses import HTMLResponse, StreamingResponse
@@ -29,9 +31,10 @@ import uvicorn
 
 load_dotenv()
 
-TEMPORAL_HOST = os.getenv("TEMPORAL_HOST", "localhost:7233")
-TASK_QUEUE    = "sre-swarm"
-DASHBOARD_PORT = int(os.getenv("DASHBOARD_PORT", "7080"))
+TEMPORAL_HOST     = os.getenv("TEMPORAL_HOST", "localhost:7233")
+MOCK_SERVICES_URL = os.getenv("MOCK_SERVICES_URL", "http://localhost:9090")
+TASK_QUEUE        = "sre-swarm"
+DASHBOARD_PORT    = int(os.getenv("DASHBOARD_PORT", "7080"))
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -389,23 +392,41 @@ async def stream() -> StreamingResponse:
 @app.post("/trigger")
 async def trigger_incident() -> dict:
     from sre_swarm.workflows.incident_response import IncidentInput, IncidentResponseWorkflow  # noqa: PLC0415
+    from sre_swarm.scripts.trigger_incident import seed_incident  # noqa: PLC0415
 
     try:
+        # Seed real order + payment in mock services before starting workflow
+        async with httpx.AsyncClient() as http:
+            order_id, payment_id = await seed_incident(http)
+
+        logger.info("Seeded order_id=%s payment_id=%s", order_id, payment_id)
+
+        trace_ids = [
+            f"trace-timeout-{order_id}",   # "timeout" substring → fixture
+            f"order_id:{order_id}",        # parsed by pipeline._extract_ids()
+            f"payment_id:{payment_id}",    # parsed by pipeline._extract_ids()
+        ]
+
+        inc_id = f"INC-{uuid.uuid4().hex[:8].upper()}"
         client = await _get_client()
         incident = IncidentInput(
-            incident_id=f"INC-{uuid.uuid4().hex[:8].upper()}",
+            incident_id=inc_id,
             affected_service="payment-service",
-            alert_summary="HTTP 500 spike on /checkout — p99 latency > 4 s",
-            trace_ids=["trace-timeout-001", "trace-002"],
+            alert_summary=(
+                f"HTTP 500 spike on /checkout — p99 latency > 4 s. "
+                f"Affected order: {order_id}, payment: {payment_id}"
+            ),
+            trace_ids=trace_ids,
         )
         handle = await client.start_workflow(
             IncidentResponseWorkflow.run,
             incident,
-            id=f"incident-{incident.incident_id}",
+            id=f"incident-{inc_id}",
             task_queue=TASK_QUEUE,
         )
         logger.info("Triggered workflow id=%s", handle.id)
-        return {"workflow_id": handle.id, "incident_id": incident.incident_id}
+        return {"workflow_id": handle.id, "incident_id": inc_id,
+                "order_id": order_id, "payment_id": payment_id}
     except Exception as e:
         from fastapi import HTTPException  # noqa: PLC0415
         raise HTTPException(status_code=500, detail=str(e))

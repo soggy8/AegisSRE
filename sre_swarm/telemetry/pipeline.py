@@ -68,6 +68,28 @@ _ERROR_SCENARIOS = [
 
 
 # ---------------------------------------------------------------------------
+# ID extraction helpers
+# ---------------------------------------------------------------------------
+
+def _extract_ids(trace_ids: list[str]) -> dict[str, str]:
+    """
+    Pull ``order_id`` and ``payment_id`` out of structured trace IDs.
+
+    The trigger script embeds real IDs as ``order_id:<value>`` and
+    ``payment_id:<value>`` entries in the trace_ids list so they survive
+    the trip through the Temporal workflow without needing a separate
+    side-channel.
+    """
+    ids: dict[str, str] = {}
+    for t in trace_ids:
+        if t.startswith("order_id:"):
+            ids["order_id"] = t.split(":", 1)[1]
+        elif t.startswith("payment_id:"):
+            ids["payment_id"] = t.split(":", 1)[1]
+    return ids
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -82,6 +104,11 @@ def get_spans(trace_ids: list[str], service: str) -> list[dict[str, Any]]:
       2. Otherwise, generate synthetic spans dynamically — one per trace_id,
          with realistic error injection weighted toward the requested service.
 
+    If any trace_id carries a structured ``order_id:<value>`` or
+    ``payment_id:<value>`` prefix (set by the trigger script), those IDs are
+    extracted and injected into the first error span so the LLM can read the
+    real IDs instead of inventing them.
+
     Args:
         trace_ids: List of trace IDs to fetch spans for.
         service:   The primary service under investigation.
@@ -93,21 +120,28 @@ def get_spans(trace_ids: list[str], service: str) -> list[dict[str, Any]]:
         logger.warning("get_spans called with empty trace_ids list")
         return []
 
-    # --- Try fixture match first -------------------------------------------
+    # --- Resolve spans from fixture or dynamic generation ------------------
     fixture_spans = _try_load_fixture(trace_ids, service)
     if fixture_spans is not None:
-        logger.info(
-            "Returning %d fixture spans for service=%s traces=%s",
-            len(fixture_spans), service, trace_ids,
-        )
-        return fixture_spans
+        spans = fixture_spans
+        log_source = "fixture"
+    else:
+        spans = _generate_spans(trace_ids, service)
+        log_source = "dynamic"
 
-    # --- Fall back to dynamic generation -----------------------------------
-    spans = _generate_spans(trace_ids, service)
     logger.info(
-        "Generated %d dynamic spans for service=%s traces=%s",
-        len(spans), service, trace_ids,
+        "Returning %d %s spans for service=%s traces=%s",
+        len(spans), log_source, service, trace_ids,
     )
+
+    # --- Annotate the first error span with real order/payment IDs ----------
+    real_ids = _extract_ids(trace_ids)
+    if real_ids:
+        for span in spans:
+            if span.get("error"):
+                span.update(real_ids)
+                break
+
     return spans
 
 

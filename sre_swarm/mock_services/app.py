@@ -53,7 +53,18 @@ app = FastAPI(title="Mock Microservices", version="0.1.0")
 # SQLite helpers
 # ---------------------------------------------------------------------------
 
+# For :memory: databases every sqlite3.connect() call creates a brand-new
+# empty DB, so we keep one persistent connection for that case.
+_SHARED_CON: sqlite3.Connection | None = None
+
+
 def _connect() -> sqlite3.Connection:
+    global _SHARED_CON
+    if DB_PATH == ":memory:":
+        if _SHARED_CON is None:
+            _SHARED_CON = sqlite3.connect(":memory:", check_same_thread=False)
+            _SHARED_CON.row_factory = sqlite3.Row
+        return _SHARED_CON
     con = sqlite3.connect(DB_PATH)
     con.row_factory = sqlite3.Row
     return con
@@ -79,7 +90,13 @@ def _init_db() -> None:
         )
     """)
     con.commit()
-    con.close()
+    _release(con)
+
+
+def _release(con: sqlite3.Connection) -> None:
+    """Close the connection unless it is the shared :memory: connection."""
+    if con is not _SHARED_CON:
+        con.close()
 
 
 _init_db()
@@ -91,7 +108,7 @@ def _get_order(order_id: str) -> dict[str, Any] | None:
         "SELECT order_id, customer_id, items, status FROM orders WHERE order_id=?",
         (order_id,),
     ).fetchone()
-    con.close()
+    _release(con)
     if row is None:
         return None
     return {"order_id": row["order_id"], "customer_id": row["customer_id"],
@@ -106,14 +123,14 @@ def _save_order(order: dict[str, Any]) -> None:
          json.dumps(order["items"]), order["status"]),
     )
     con.commit()
-    con.close()
+    _release(con)
 
 
 def _update_order_status(order_id: str, status: str) -> None:
     con = _connect()
     con.execute("UPDATE orders SET status=? WHERE order_id=?", (status, order_id))
     con.commit()
-    con.close()
+    _release(con)
 
 
 def _get_payment(payment_id: str) -> dict[str, Any] | None:
@@ -122,7 +139,7 @@ def _get_payment(payment_id: str) -> dict[str, Any] | None:
         "SELECT payment_id, customer_id, amount, status FROM payments WHERE payment_id=?",
         (payment_id,),
     ).fetchone()
-    con.close()
+    _release(con)
     if row is None:
         return None
     return {"payment_id": row["payment_id"], "customer_id": row["customer_id"],
@@ -137,14 +154,14 @@ def _save_payment(payment: dict[str, Any]) -> None:
          payment["amount"], payment["status"]),
     )
     con.commit()
-    con.close()
+    _release(con)
 
 
 def _update_payment_status(payment_id: str, status: str) -> None:
     con = _connect()
     con.execute("UPDATE payments SET status=? WHERE payment_id=?", (status, payment_id))
     con.commit()
-    con.close()
+    _release(con)
 
 
 # ---------------------------------------------------------------------------

@@ -13,6 +13,8 @@ Features:
 
 Run with:
     python -m sre_swarm.dashboard.app
+
+Serves the project landing page at ``/`` and the operational dashboard at ``/dashboard``.
 """
 
 from __future__ import annotations
@@ -28,6 +30,8 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Response, Request
 from fastapi.responses import HTMLResponse, StreamingResponse
 import uvicorn
+
+from sre_swarm.landing.page import LANDING_HTML
 
 load_dotenv()
 
@@ -160,6 +164,7 @@ _HTML = """<!DOCTYPE html>
     <div class="subtitle">Autonomous incident response · live view</div>
   </div>
   <div style="display:flex;align-items:center;gap:16px;">
+    <a href="/" style="font-size:13px;color:#64748b;text-decoration:none;">← Home</a>
     <span><span id="status-dot"></span><span id="conn-label">connecting…</span></span>
     <button id="trigger-btn" onclick="triggerIncident()">
       <div id="trigger-spinner"></div>
@@ -331,7 +336,12 @@ function showError(msg) {
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index() -> HTMLResponse:
+async def landing() -> HTMLResponse:
+    return HTMLResponse(LANDING_HTML)
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+async def dashboard() -> HTMLResponse:
     return HTMLResponse(_HTML)
 
 

@@ -45,9 +45,9 @@ python -m sre_swarm.mcp.server
 # 6. Terminal 4 — Temporal worker
 python -m sre_swarm.worker
 
-# 7. Terminal 5 — Dashboard  → open http://localhost:7080
+# 7. Terminal 5 — Web UI  → open http://localhost:7080 (landing) or /dashboard
 python -m sre_swarm.dashboard.app
-# Use the dashboard to trigger incidents and approve/reject rollbacks
+# Landing page at /; use /dashboard to trigger incidents and approve/reject rollbacks
 ```
 
 ## Contributing

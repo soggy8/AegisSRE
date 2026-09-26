@@ -388,16 +388,12 @@ async def stream() -> StreamingResponse:
 
 @app.post("/trigger")
 async def trigger_incident() -> dict:
-    from sre_swarm.workflows.incident_response import IncidentInput, IncidentResponseWorkflow  # noqa: PLC0415
+    from sre_swarm.scripts.trigger_incident import seed_and_build_incident  # noqa: PLC0415
+    from sre_swarm.workflows.incident_response import IncidentResponseWorkflow  # noqa: PLC0415
 
     try:
         client = await _get_client()
-        incident = IncidentInput(
-            incident_id=f"INC-{uuid.uuid4().hex[:8].upper()}",
-            affected_service="payment-service",
-            alert_summary="HTTP 500 spike on /checkout — p99 latency > 4 s",
-            trace_ids=["trace-timeout-001", "trace-002"],
-        )
+        incident = await seed_and_build_incident()
         handle = await client.start_workflow(
             IncidentResponseWorkflow.run,
             incident,

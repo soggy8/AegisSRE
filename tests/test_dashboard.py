@@ -175,6 +175,14 @@ def test_dashboard_page_surfaces_verification_fields() -> None:
     client = TestClient(app)
     html = client.get("/dashboard").text
     assert html.startswith("<!DOCTYPE html>")
+    assert "AegisSRE Dashboard" in html
+    assert "Autonomous SRE Orchestration Swarm" in html
+    assert "What you are looking at" in html
+    assert "extra_context" in html
+    assert "Your questions" in html
+    assert "error_spans" in html
+    assert "Errors in trace" in html
+    assert 'id="demo-passcode"' in html
     assert "compensation_results" in html
     assert "auto_approved" in html
     assert "verification" in html

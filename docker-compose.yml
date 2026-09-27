@@ -1,12 +1,16 @@
 # One command for the whole demo:
 #   docker compose up --build
 #
-# Dashboard:    http://localhost:7080
+# Landing page: http://localhost:7080
+# Live console: http://localhost:7080/dashboard
 # Temporal UI:  http://localhost:8080
 #
 # OPENAI_API_KEY, WATSONX_API_KEY, and WATSONX_PROJECT_ID are read from the
 # shell or from a gitignored .env file in this directory. Leave them empty
 # to use the heuristic root-cause fallback.
+#
+# Public demo: set OPENAI_API_KEY plus spend caps in .env (see .env.example
+# and README "Public demo URL").
 
 services:
   temporal:
@@ -46,6 +50,7 @@ services:
       MCP_SERVER_PORT: "8081"
       MCP_API_KEY: ${MCP_API_KEY:-dev-key}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_DAILY_RCA_MAX: ${OPENAI_DAILY_RCA_MAX:-40}
       WATSONX_API_KEY: ${WATSONX_API_KEY:-}
       WATSONX_PROJECT_ID: ${WATSONX_PROJECT_ID:-}
     ports:
@@ -76,10 +81,20 @@ services:
   dashboard:
     build: .
     command: python -m sre_swarm.dashboard.app
+    env_file:
+      - .env
     environment:
       TEMPORAL_HOST: temporal:7233
       DASHBOARD_PORT: "7080"
       MOCK_SERVICES_URL: http://mock-services:9090
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_DAILY_RCA_MAX: ${OPENAI_DAILY_RCA_MAX:-40}
+      OPENAI_DAILY_NARRATIVE_MAX: ${OPENAI_DAILY_NARRATIVE_MAX:-25}
+      DEMO_TRIGGER_PASSCODE: ${DEMO_TRIGGER_PASSCODE:-}
+      DEMO_TRIGGER_MAX_PER_IP_HOUR: ${DEMO_TRIGGER_MAX_PER_IP_HOUR:-4}
+      DEMO_TRIGGER_MAX_GLOBAL_DAY: ${DEMO_TRIGGER_MAX_GLOBAL_DAY:-30}
+      DEMO_NARRATIVE_MAX_PER_IP_HOUR: ${DEMO_NARRATIVE_MAX_PER_IP_HOUR:-6}
+      DEMO_ASK_MAX_PER_IP_HOUR: ${DEMO_ASK_MAX_PER_IP_HOUR:-6}
     ports:
       - "7080:7080"
     depends_on:

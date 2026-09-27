@@ -27,11 +27,13 @@ Span shape (matches CONTRIBUTING.md §Area B spec exactly):
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import random
 import uuid
-from datetime import datetime, timezone
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -45,9 +47,10 @@ _FIXTURES_DIR = Path(__file__).parent / "fixtures"
 
 # Known fixture scenarios keyed by a substring that may appear in a trace_id
 _SCENARIO_MAP: dict[str, str] = {
-    "happy":   "happy_path.json",
-    "timeout": "payment_timeout.json",
-    "cascade": "cascade_failure.json",
+    "happy":     "happy_path.json",
+    "timeout":   "payment_timeout.json",
+    "cascade":   "cascade_failure.json",
+    "inventory": "inventory_failure.json",
 }
 
 # Services that may appear in dynamically generated spans
@@ -124,6 +127,20 @@ def get_spans(trace_ids: list[str], service: str) -> list[dict[str, Any]]:
     return spans
 
 
+def _primary_trace_id(trace_ids: list[str]) -> str:
+    """First real trace id (excludes order_id:/payment_id: carriers)."""
+    for trace_id in trace_ids:
+        if trace_id.startswith("order_id:") or trace_id.startswith("payment_id:"):
+            continue
+        return trace_id
+    return "trace-unknown"
+
+
+def _fixture_seed(trace_ids: list[str]) -> int:
+    material = "|".join(sorted(trace_ids))
+    return hash(material) & 0xFFFFFFFF
+
+
 def _extract_ids(trace_ids: list[str]) -> dict[str, str]:
     """
     Extract real order/payment IDs embedded as structured trace_id entries.
@@ -161,11 +178,75 @@ def _try_load_fixture(
                 return None
             with fixture_path.open() as f:
                 all_spans: list[dict] = json.load(f)
-            # Return spans for the requested trace IDs, or all if none match
-            matching = [s for s in all_spans if s["trace_id"] in trace_ids]
-            return matching if matching else all_spans
+            return _personalize_fixture(
+                all_spans,
+                primary_trace_id=_primary_trace_id(trace_ids),
+                affected_service=service,
+                seed=_fixture_seed(trace_ids),
+            )
 
     return None
+
+
+def _personalize_fixture(
+    all_spans: list[dict],
+    primary_trace_id: str,
+    affected_service: str,
+    seed: int,
+) -> list[dict]:
+    """
+    Turn static fixture JSON into a per-incident trace: pick a template trace,
+    remap ids, jitter latencies/timestamps, and occasionally vary cascade shape.
+    """
+    by_trace: dict[str, list[dict]] = defaultdict(list)
+    for span in all_spans:
+        by_trace[str(span["trace_id"])].append(span)
+
+    rng = random.Random(seed)
+    template_key = rng.choice(sorted(by_trace.keys()))
+    template = by_trace[template_key]
+
+    base_time = datetime.fromtimestamp(1_700_000_000 + (seed % 86_400), tz=timezone.utc)
+    personalized: list[dict] = []
+
+    for index, span in enumerate(template):
+        row = copy.deepcopy(span)
+        row["trace_id"] = primary_trace_id
+        row["span_id"] = f"{seed % 0xFFFFFFFF:08x}{index:04x}"[:12]
+        lo, hi = (3500, 7200) if row.get("error") else (15, 280)
+        base_latency = int(row.get("latency_ms") or lo)
+        jitter = rng.randint(-450, 450)
+        row["latency_ms"] = max(lo, min(hi, base_latency + jitter))
+        row["timestamp"] = (base_time + timedelta(milliseconds=index * 17 + rng.randint(0, 40))).isoformat().replace(
+            "+00:00", "Z",
+        )
+
+        # Occasionally soften a secondary cascade error so rows don't look cloned.
+        if (
+            row.get("service") == "api-gateway"
+            and row.get("error")
+            and rng.random() < 0.22
+        ):
+            row["error"] = False
+            row["status_code"] = 200
+            row["latency_ms"] = rng.randint(180, 950)
+
+        personalized.append(row)
+
+    # Rarely inject an extra secondary error on a healthy sibling service.
+    if rng.random() < 0.18:
+        for row in personalized:
+            if row.get("service") == "inventory-service" and not row.get("error"):
+                row["error"] = True
+                row["status_code"] = rng.choice([502, 503, 504])
+                row["latency_ms"] = rng.randint(1200, 3800)
+                break
+
+    payment = next((s for s in personalized if s.get("service") == affected_service), None)
+    if payment and payment.get("error"):
+        payment["status_code"] = rng.choice([500, 502, 503, 504])
+
+    return personalized
 
 
 # ---------------------------------------------------------------------------
@@ -185,27 +266,35 @@ def _generate_spans(
     """
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     spans: list[dict[str, Any]] = []
+    real_traces = [
+        t for t in trace_ids
+        if not t.startswith("order_id:") and not t.startswith("payment_id:")
+    ]
+    if not real_traces:
+        real_traces = [_primary_trace_id(trace_ids)]
 
-    for trace_id in trace_ids:
+    rng = random.Random(_fixture_seed(trace_ids))
+
+    for trace_id in real_traces:
         for svc in _KNOWN_SERVICES:
             if svc == service:
                 # Primary failure — always inject an error scenario
-                scenario = random.choice(_ERROR_SCENARIOS[:3])  # pick a real error
+                scenario = rng.choice(_ERROR_SCENARIOS[:3])  # pick a real error
                 status_code = scenario["status_code"]
                 lo, hi = scenario["latency_ms_range"]
-                latency_ms = random.randint(lo, hi)
+                latency_ms = rng.randint(lo, hi)
                 error = True
-            elif random.random() < 0.20:
+            elif rng.random() < 0.20:
                 # Secondary cascade effect on other services
-                scenario = random.choice(_ERROR_SCENARIOS)
+                scenario = rng.choice(_ERROR_SCENARIOS)
                 status_code = scenario["status_code"]
                 lo, hi = scenario["latency_ms_range"]
-                latency_ms = random.randint(lo, hi)
+                latency_ms = rng.randint(lo, hi)
                 error = status_code >= 400
             else:
                 # Healthy span
                 status_code = 200
-                latency_ms = random.randint(10, 250)
+                latency_ms = rng.randint(10, 250)
                 error = False
 
             spans.append({

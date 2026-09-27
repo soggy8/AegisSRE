@@ -1,0 +1,74 @@
+[
+  {
+    "trace_id":    "trace-inventory-001",
+    "span_id":     "span-i001a",
+    "service":     "api-gateway",
+    "status_code": 200,
+    "latency_ms":  48,
+    "error":       false,
+    "timestamp":   "2025-01-01T12:20:00Z"
+  },
+  {
+    "trace_id":    "trace-inventory-001",
+    "span_id":     "span-i001b",
+    "service":     "order-service",
+    "status_code": 200,
+    "latency_ms":  102,
+    "error":       false,
+    "timestamp":   "2025-01-01T12:20:00Z"
+  },
+  {
+    "trace_id":    "trace-inventory-001",
+    "span_id":     "span-i001c",
+    "service":     "payment-service",
+    "status_code": 200,
+    "latency_ms":  118,
+    "error":       false,
+    "timestamp":   "2025-01-01T12:20:00Z"
+  },
+  {
+    "trace_id":    "trace-inventory-001",
+    "span_id":     "span-i001d",
+    "service":     "inventory-service",
+    "status_code": 503,
+    "latency_ms":  2200,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:20:01Z"
+  },
+  {
+    "trace_id":    "trace-inventory-002",
+    "span_id":     "span-i002a",
+    "service":     "api-gateway",
+    "status_code": 200,
+    "latency_ms":  52,
+    "error":       false,
+    "timestamp":   "2025-01-01T12:20:02Z"
+  },
+  {
+    "trace_id":    "trace-inventory-002",
+    "span_id":     "span-i002b",
+    "service":     "order-service",
+    "status_code": 200,
+    "latency_ms":  95,
+    "error":       false,
+    "timestamp":   "2025-01-01T12:20:02Z"
+  },
+  {
+    "trace_id":    "trace-inventory-002",
+    "span_id":     "span-i002c",
+    "service":     "payment-service",
+    "status_code": 200,
+    "latency_ms":  130,
+    "error":       false,
+    "timestamp":   "2025-01-01T12:20:02Z"
+  },
+  {
+    "trace_id":    "trace-inventory-002",
+    "span_id":     "span-i002d",
+    "service":     "inventory-service",
+    "status_code": 503,
+    "latency_ms":  3100,
+    "error":       true,
+    "timestamp":   "2025-01-01T12:20:03Z"
+  }
+]

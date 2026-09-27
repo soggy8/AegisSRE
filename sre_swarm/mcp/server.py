@@ -175,7 +175,17 @@ def _handle_analyze_root_cause(arguments: dict[str, Any]) -> dict[str, Any]:
         )
 
     if OPENAI_API_KEY:
-        return _analyze_with_openai(alert_summary, spans, extra_context)
+        from sre_swarm.demo.spend_guard import (  # noqa: PLC0415
+            rca_openai_allowed,
+            record_rca_openai_call,
+        )
+
+        if rca_openai_allowed():
+            record_rca_openai_call()
+            return _analyze_with_openai(alert_summary, spans, extra_context)
+        logger.warning(
+            "OpenAI daily RCA cap reached — using heuristic fallback for this request.",
+        )
 
     if WATSONX_API_KEY and WATSONX_PROJECT_ID:
         return _analyze_with_watsonx(alert_summary, spans, extra_context)
@@ -290,7 +300,14 @@ def _analyze_with_openai(
             if delta:
                 chunks.append(delta)
     raw = "".join(chunks)
-    return _parse_llm_json(raw)
+    result = _parse_llm_json(raw)
+    result["confidence"] = _finalize_confidence(
+        spans,
+        result.get("compensations", []),
+        extra_context,
+        result.get("confidence"),
+    )
+    return result
 
 
 def _analyze_with_watsonx(
@@ -318,7 +335,121 @@ def _analyze_with_watsonx(
     )
     prompt = f"{_SYSTEM_PROMPT}\n\n{_build_user_message(alert_summary, spans, extra_context)}"
     result = model.generate_text(prompt=prompt, params={"max_new_tokens": 512, "temperature": 0.0})
-    return _parse_llm_json(result)
+    parsed = _parse_llm_json(result)
+    parsed["confidence"] = _finalize_confidence(
+        spans,
+        parsed.get("compensations", []),
+        extra_context,
+        parsed.get("confidence"),
+    )
+    return parsed
+
+
+def _compensations_match_span_ids(
+    compensations: list[dict],
+    order_id: str | None,
+    payment_id: str | None,
+) -> bool:
+    """True when each planned rollback uses the IDs found on error spans."""
+    if not compensations:
+        return False
+    need_order = bool(order_id)
+    need_payment = bool(payment_id)
+    have_order = not need_order
+    have_payment = not need_payment
+    for comp in compensations:
+        payload = comp.get("payload") or {}
+        ep = comp.get("endpoint", "")
+        if ep == "/cancelOrder":
+            if need_order:
+                if payload.get("order_id") != order_id:
+                    return False
+                have_order = True
+        elif ep == "/refundPayment":
+            if need_payment:
+                if payload.get("payment_id") != payment_id:
+                    return False
+                have_payment = True
+    return have_order and have_payment
+
+
+def _evidence_confidence(
+    spans: list[dict],
+    compensations: list[dict],
+    extra_context: list[str] | None = None,
+) -> float:
+    """
+    Deterministic confidence from telemetry + plan quality.
+
+    Keeps the default demo incident (payment timeout fixture with gateway +
+    payment errors) in the high-80s / low-90s so the human-approval beat still
+    runs, while single clear failures with IDs can reach auto-approve.
+    """
+    error_spans = [s for s in spans if s.get("error")]
+    if not error_spans:
+        return 0.35
+
+    order_id, payment_id = _compensation_ids_from_spans(spans)
+    has_both_ids = bool(order_id and payment_id)
+    comp_ok = _compensations_match_span_ids(compensations, order_id, payment_id)
+
+    score = 0.52
+    if len(error_spans) == 1:
+        score += 0.18
+    elif len(error_spans) == 2:
+        score += 0.12
+    else:
+        score += min(len(error_spans) * 0.04, 0.16)
+
+    if order_id:
+        score += 0.07
+    if payment_id:
+        score += 0.07
+    if compensations and comp_ok:
+        score += 0.10
+    elif compensations:
+        score += 0.04
+
+    if extra_context:
+        score -= 0.07 * len(extra_context)
+
+    payment_primary = any(
+        s.get("service") == "payment-service"
+        and int(s.get("status_code") or 0) >= 500
+        for s in error_spans
+    )
+    error_services = {s.get("service") for s in error_spans if s.get("service")}
+
+    score = max(score, 0.25)
+
+    if len(error_services) >= 2 and payment_primary and has_both_ids and comp_ok:
+        # Typical Trigger incident fixture: strong plan, still below auto-approve.
+        score += 0.05
+        score = min(score, 0.94)
+    elif payment_primary and has_both_ids and comp_ok and len(error_spans) == 1:
+        score = max(score, 0.96)
+
+    return round(min(max(score, 0.0), 0.99), 2)
+
+
+def _finalize_confidence(
+    spans: list[dict],
+    compensations: list[dict],
+    extra_context: list[str] | None,
+    llm_confidence: float | None = None,
+) -> float:
+    """Blend evidence with optional model-reported confidence."""
+    evidence = _evidence_confidence(spans, compensations, extra_context)
+    if llm_confidence is None:
+        return evidence
+    try:
+        llm = float(llm_confidence)
+    except (TypeError, ValueError):
+        return evidence
+    llm = min(max(llm, 0.0), 1.0)
+    # Models often cluster around 0.85–0.92; telemetry should dominate.
+    blended = 0.75 * evidence + 0.25 * llm
+    return round(min(max(blended, 0.0), 0.99), 2)
 
 
 def _compensation_ids_from_spans(spans: list[dict]) -> tuple[str | None, str | None]:
@@ -355,19 +486,26 @@ def _analyze_heuristic(
     error_spans = [s for s in spans if s.get("error")]
     if error_spans:
         culprit = error_spans[0]["service"]
-        root_cause = (
-            f"{culprit} returned HTTP {error_spans[0].get('status_code', '?')} "
-            f"with {error_spans[0].get('latency_ms', '?')} ms latency — "
-            f"likely caused the saga to partially commit."
-        )
-        confidence = round(min(0.5 + len(error_spans) * 0.08, 0.88), 2)
+        if len(error_spans) == 1:
+            root_cause = (
+                f"{culprit} returned HTTP {error_spans[0].get('status_code', '?')} "
+                f"with {error_spans[0].get('latency_ms', '?')} ms latency — "
+                f"likely caused the saga to partially commit."
+            )
+        else:
+            summary = ", ".join(
+                f"{s.get('service', '?')} ({s.get('status_code', '?')}, {s.get('latency_ms', '?')}ms)"
+                for s in error_spans
+            )
+            root_cause = (
+                f"Trace shows {len(error_spans)} failing spans: {summary}. "
+                f"Likely root: {culprit} — saga may have partially committed."
+            )
     else:
         root_cause = f"No error spans found; alert was: {alert_summary}"
-        confidence = 0.30
 
     if extra_context:
         root_cause = f"{root_cause} Follow-up considered: {'; '.join(extra_context)}"
-        confidence = round(max(confidence - 0.05, 0.0), 2)
 
     order_id, payment_id = _compensation_ids_from_spans(spans)
     compensations: list[dict[str, Any]] = []
@@ -388,6 +526,8 @@ def _analyze_heuristic(
             f"{root_cause} No order_id/payment_id on spans — "
             f"set OPENAI_API_KEY for LLM-generated compensations."
         )
+
+    confidence = _evidence_confidence(spans, compensations, extra_context)
 
     return {
         "root_cause": root_cause,

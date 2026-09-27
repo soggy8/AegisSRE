@@ -270,6 +270,22 @@ class TestAnalyzeRootCause:
         body = self._call(client, "Spurious alert", telemetry)
         assert "root_cause" in body
 
+    def test_demo_fixture_confidence_below_auto_approve(self, client: TestClient) -> None:
+        """Trigger-incident telemetry should not always read as a flat 90%."""
+        from sre_swarm.telemetry.pipeline import get_spans
+
+        spans = get_spans(
+            ["trace-timeout-001", "order_id:ord-demo", "payment_id:pay-demo"],
+            "payment-service",
+        )
+        body = self._call(
+            client,
+            "HTTP 500 spike on /checkout",
+            {"spans": spans, "cpu_overhead_pct": 2.4},
+        )
+        assert body["confidence"] == pytest.approx(0.93)
+        assert body["confidence"] < 0.95
+
     def test_heuristic_builds_compensations_from_span_ids(self, client: TestClient) -> None:
         telemetry = {
             "spans": [

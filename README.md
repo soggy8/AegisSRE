@@ -76,11 +76,24 @@ cp .env.example .env
 docker compose up --build
 ```
 
-- **Landing page:** http://localhost:7080/  
-- **Dashboard:** http://localhost:7080/dashboard  
+- **Landing page:** http://localhost:7080/
+- **Live console:** http://localhost:7080/dashboard
 - **Temporal UI:** http://localhost:8080  
 
 Compose runs Temporal’s **dev server with in-memory persistence**. Restarting the stack clears workflow history—trigger a fresh incident after `docker compose up`.
+
+### Public demo URL (hackathon)
+
+You can leave **`OPENAI_API_KEY` enabled** on both `mcp` and `dashboard` in Compose and still limit abuse:
+
+| Control | Purpose |
+|--------|---------|
+| `OPENAI_DAILY_RCA_MAX` / `OPENAI_DAILY_NARRATIVE_MAX` | After the daily cap, RCA falls back to the **heuristic** and Explain uses the **template** (demo keeps working). |
+| `DEMO_TRIGGER_MAX_*` | Rate-limits **Trigger incident** per IP and globally. |
+| `DEMO_NARRATIVE_MAX_PER_IP_HOUR` / `DEMO_ASK_MAX_PER_IP_HOUR` | Limits expensive **Explain** and **Ask** re-analysis. |
+| `DEMO_TRIGGER_PASSCODE` | Optional shared secret; show the passcode to judges in your submission, not on the landing page. |
+
+Also set a **hard monthly budget** on [platform.openai.com](https://platform.openai.com/settings/organization/limits) as a backstop.
 
 ### Workflow highlights
 

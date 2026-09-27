@@ -156,6 +156,7 @@ LANDING_HTML = r"""<!DOCTYPE html>
   ol.run li::before { content: counter(r, decimal-leading-zero); font-family: var(--mono); font-size: 12px; color: var(--ink-3); padding-top: 2px; }
   ol.run code { font-size: 12.5px; }
   ol.run .note { display: block; color: var(--ink-3); font-size: 13px; }
+  .run-cta { margin-bottom: 40px; }
 
   footer {
     border-top: 1px solid var(--ink); padding: 24px 0 40px;
@@ -329,6 +330,9 @@ LANDING_HTML = r"""<!DOCTYPE html>
       <code>POST /incident</code> accepts PagerDuty v3 and Alertmanager webhooks as they are, and
       works out which format it got. Or trigger a seeded test incident from the dashboard.
     </p>
+  </div>
+  <div class="links run-cta">
+    <a class="btn" href="/dashboard">Try the demo</a>
   </div>
   <div class="split">
     <div>

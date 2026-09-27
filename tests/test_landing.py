@@ -16,6 +16,7 @@ def test_landing_page_at_root() -> None:
     assert "AegisSRE" in response.text
     assert "already drafted" in response.text
     assert 'href="/dashboard"' in response.text
+    assert "Try the demo" in response.text
 
 
 def test_dashboard_at_dashboard_path() -> None:

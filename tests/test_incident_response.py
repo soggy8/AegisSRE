@@ -81,7 +81,29 @@ async def _mock_call_mcp_tool_two_compensations(request: MCPToolRequest) -> MCPT
     if request.tool_name == "get_telemetry_context":
         return MCPToolResult(
             tool_name="get_telemetry_context",
-            output={"spans": [], "cpu_overhead_pct": 2.4},
+            output={
+                "spans": [
+                    {
+                        "service": "api-gateway",
+                        "status_code": 504,
+                        "latency_ms": 4823,
+                        "error": True,
+                    },
+                    {
+                        "service": "order-service",
+                        "status_code": 200,
+                        "latency_ms": 93,
+                        "error": False,
+                    },
+                    {
+                        "service": "payment-service",
+                        "status_code": 500,
+                        "latency_ms": 4710,
+                        "error": True,
+                    },
+                ],
+                "cpu_overhead_pct": 2.4,
+            },
         )
     return MCPToolResult(
         tool_name="analyze_root_cause",
@@ -242,6 +264,9 @@ async def test_approval_path() -> None:
                     pytest.fail(
                         f"Workflow never reached REMEDIATING; last status: {state['status']}"
                     )
+
+                services = {e["service"] for e in state["error_spans"]}
+                assert services == {"api-gateway", "payment-service"}
 
             await handle.signal(IncidentResponseWorkflow.approve_rollback)
             result: str = await handle.result()

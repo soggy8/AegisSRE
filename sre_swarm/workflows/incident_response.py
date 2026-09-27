@@ -41,6 +41,20 @@ with workflow.unsafe.imports_passed_through():
 AUTO_APPROVE_CONFIDENCE = 0.95
 
 
+def _summarize_error_spans(spans: list[dict]) -> list[dict]:
+    """Compact error-span list for dashboard display (deterministic, no I/O)."""
+    summary: list[dict] = []
+    for span in spans:
+        if not span.get("error"):
+            continue
+        summary.append({
+            "service": str(span.get("service") or "unknown"),
+            "status_code": span.get("status_code"),
+            "latency_ms": span.get("latency_ms"),
+        })
+    return summary
+
+
 def _error_detail(outcome: BaseException) -> str:
     """Prefer the activity's own message over Temporal's wrapper text."""
     messages: list[str] = []
@@ -97,6 +111,8 @@ class IncidentState:
     rollback_approved: bool = False
     resolution_notes: str = ""
     extra_context: list[str] = field(default_factory=list)
+    # Error spans from the initial telemetry pull (may span multiple services).
+    error_spans: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +175,7 @@ class IncidentResponseWorkflow:
         return {
             "status": self._state.status,
             "affected_service": self._input.affected_service if self._input else None,
+            "alert_summary": self._input.alert_summary if self._input else None,
             "root_cause": self._state.root_cause,
             "confidence": self._state.confidence,
             "auto_approved": self._state.auto_approved,
@@ -171,6 +188,8 @@ class IncidentResponseWorkflow:
             ],
             "compensation_results": self._state.compensation_results,
             "verification": self._state.verification,
+            "extra_context": list(self._state.extra_context),
+            "error_spans": list(self._state.error_spans),
         }
 
     # ------------------------------------------------------------------
@@ -195,6 +214,10 @@ class IncidentResponseWorkflow:
             telemetry_result = await self._fetch_telemetry(incident, retry)
         except ActivityError as exc:
             return self._fail_from_activity("Telemetry fetch", exc)
+
+        self._state.error_spans = _summarize_error_spans(
+            telemetry_result.output.get("spans", []),
+        )
 
         # -----------------------------------------------------------------
         # Step 2 — Root-cause analysis via LLM (non-deterministic → Activity)
